@@ -2,10 +2,6 @@
 
 一个原生 macOS 菜单栏小工具，随时查看 Codex 任务、账号额度与 Token 使用情况。SwiftUI + AppKit，中文界面，支持系统浅色 / 深色外观，无第三方运行时依赖。
 
-支持 **刘海灵动岛**：收起时在摄像头两侧显示任务数和剩余额度；悬停展开，移开鼠标后收起，点击图钉可固定。展开面板显示最近任务、积分和额度，点击“详细面板”进入完整界面。
-
-![刘海灵动岛，展开状态，演示数据](docs/notch-expanded.png)
-
 ![Codex Pulse 演示界面](docs/preview-dark.png)
 
 ## 能看到什么
@@ -14,8 +10,16 @@
 - **额度**：按服务端实际返回的窗口展示剩余比例、重置时间、多模型额度、积分余额、可用重置次数。
 - **任务**：本机最近 60 个未归档会话的标题、项目、模型、活动、执行状态、本轮 / 会话累计 Token、最近输入上下文占比。
 - **账号使用**：累计 Token、连续使用天数、最近 7 个有记录日期的 Token 柱状图。
-- **设置**：登录时启动、自定义 Codex 数据目录与 CLI 路径。开机启动默认关闭。
-- **刘海灵动岛**：默认开启，可在设置中关闭。通过 macOS 屏幕安全区域识别带刘海的显示器，适配多屏与屏幕配置变化；无刘海的显示器使用菜单栏入口。
+- **设置**：跟随系统 / 浅色 / 深色主题、状态栏仅图标、登录时启动、自定义 Codex 数据目录与 CLI 路径。开机启动默认关闭。
+
+## 0.2.0 交互与界面
+
+- 点击面板外部、切换应用或按 Esc 自动收起；右上角也有收起按钮。没有固定展开模式。
+- 四个页面：概览、任务、用量、设置。任务搜索支持名称、项目路径、模型和会话 ID；多个关键词同时匹配。
+- 支持全部 / 执行中 / 待确认 / 已完成 / 已中断 / 未知筛选，按任务状态、最近更新或累计 Token 排序。
+- 点击任务展开详情，查看本轮 Token、上下文占比；可打开项目或复制会话 ID。
+- 额度显示重置倒计时、同步新鲜度和更新中状态；⌘R 立即刷新。
+- 登录项与账号配置沿用已有设置。旧刘海面板及其开关已移除。
 
 ## 运行
 
@@ -27,7 +31,7 @@ cd codex-pulse
 ./scripts/build.sh --install
 ```
 
-脚本构建 `dist/Codex Pulse.app`，复制到 `~/Applications/Codex Pulse.app` 并启动。应用显示在刘海周围和菜单栏，不占 Dock。更新安装前请先退出旧版本。
+脚本构建 `dist/Codex Pulse.app`，复制到 `~/Applications/Codex Pulse.app` 并启动。应用仅在状态栏显示，不占 Dock。更新安装前请先退出旧版本。
 
 仅构建：`./scripts/build.sh`。退出：面板右下角电源按钮。卸载：退出后移除该 App；如果启用了登录时启动，先在设置中关闭。
 
@@ -63,14 +67,15 @@ Pulse 本身不读取、复制或保存 `auth.json`、API Key、账号邮件；�
 ./scripts/swift-tool.sh test
 ./scripts/build.sh
 "dist/Codex Pulse.app/Contents/MacOS/CodexPulse" --diagnose
-"dist/Codex Pulse.app/Contents/MacOS/CodexPulse" --demo --preview
+"dist/Codex Pulse.app/Contents/MacOS/CodexPulse" --demo --show --ui-check
 "dist/Codex Pulse.app/Contents/MacOS/CodexPulse" --demo --dark --screenshot /tmp/pulse-dark.png
-"dist/Codex Pulse.app/Contents/MacOS/CodexPulse" --demo --expanded --notch-screenshot /tmp/pulse-notch.png
 ```
 
 `--diagnose` 运行 20 秒后退出，仅输出连接成功与否、记录数量等摘要，不输出标题、账号 ID、积分或日志正文。演示模式不连接 CLI 或读取本机会话。`scripts/swift-tool.sh` 为部分 Command Line Tools 版本补全其自带 SwiftPM 框架搜索路径，所有设置仅影响当前构建进程。
 
-测试覆盖：任务生命周期、长时间无事件、跨轮次结束事件、累计 Token 去重、缺失额度、不同时长窗口、过期重置时间、分段写入、日志截断 / 替换及有界尾部读取。
+`--show` 打开实际状态栏弹窗；`--ui-check` 只在标准输出记录弹窗显示 / 关闭，供原生交互验证。`--tab 0/1/2/3` 可选择截图页面。
+
+测试覆盖：任务跨字段搜索、状态筛选、不同排序与稳定顺序；任务生命周期、长时间无事件、跨轮次结束事件、累计 Token 去重、缺失额度、不同时长窗口、过期重置时间、分段写入、日志截断 / 替换及有界尾部读取。
 
 ## 目录
 

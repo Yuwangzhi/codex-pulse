@@ -15,13 +15,14 @@ struct CodexPulseMain {
 }
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var item: NSStatusItem?
     private let popover = NSPopover()
     private var store: MonitorStore!
     private var cancellable: AnyCancellable?
     private var preview: NSWindow?
-    private var notch: NotchController?
+    private var outsideMonitor: Any?
+    private var localMonitor: Any?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let args = CommandLine.arguments
@@ -38,27 +39,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 button.target = self; button.action = #selector(togglePopover)
                 button.setAccessibilityLabel("Codex Pulse，点击查看任务与额度")
             }
-            popover.contentSize = NSSize(width: 440, height: 670)
+            popover.contentSize = NSSize(width: 460, height: 690)
             popover.behavior = .transient
+            popover.delegate = self
             popover.contentViewController = NSHostingController(rootView: DashboardView(store: store))
             cancellable = store.objectWillChange.sink { [weak self] in
                 DispatchQueue.main.async { self?.updateStatus() }
             }
             updateStatus()
-            if !args.contains("--screenshot") && !args.contains("--preview") {
-                notch = NotchController(store: store)
-                notch?.onDetails = { [weak self] in self?.togglePopover() }
-            }
         }
+        store.dismissPanel = { [weak self] in self?.closePopover() }
         store.start()
-        if demo, let index = args.firstIndex(of: "--notch-screenshot"), args.count > index + 1 {
-            let path = args[index + 1]
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
-                self?.notch?.captureDemo(path: path, expanded: args.contains("--expanded"))
-            }
+        if let index = args.firstIndex(of: "--tab"), args.count > index + 1, let tab = Int(args[index + 1]) {
+            store.selectedTab = min(3, max(0, tab))
         }
         if args.contains("--preview") || args.contains("--screenshot") {
-            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 440, height: 670),
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 460, height: 690),
                                   styleMask: [.titled, .closable], backing: .buffered, defer: false)
             window.title = demo ? "Codex Pulse · 演示" : "Codex Pulse"
             window.contentView = NSHostingView(rootView: DashboardView(store: store))
@@ -71,6 +67,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     self?.capture(path: path)
                 }
             }
+        }
+        if args.contains("--show") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in self?.togglePopover() }
         }
         if diagnosing {
             DispatchQueue.main.asyncAfter(deadline: .now() + 20) { [weak self] in
@@ -102,18 +101,64 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func updateStatus() {
-        item?.button?.title = " " + store.statusLabel
+        item?.button?.title = store.compactStatus ? "" : " " + store.statusLabel
         item?.button?.toolTip = "Codex Pulse · \(store.runningCount) 个活跃任务 · 主额度剩余比例"
     }
     @objc private func togglePopover() {
         guard let button = item?.button else { return }
-        if popover.isShown { popover.performClose(nil) }
+        if popover.isShown { closePopover() }
         else {
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
             NSApp.activate(ignoringOtherApps: true)
             popover.contentViewController?.view.window?.makeKey()
+            installDismissMonitors()
         }
     }
+
+    private func installDismissMonitors() {
+        removeDismissMonitors()
+        // Global mouse events cover other apps; local events cover our own windows.
+        // Neither monitor consumes another application's click.
+        outsideMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]) { [weak self] _ in
+            Task { @MainActor in self?.closePopover() }
+        }
+        localMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown, .keyDown]) { [weak self] event in
+            guard let self, self.popover.isShown, !self.store.isPresentingDialog else { return event }
+            if event.type == .keyDown {
+                if event.keyCode == 53 { self.closePopover(); return nil }
+            } else if let window = event.window,
+                      window !== self.popover.contentViewController?.view.window,
+                      window !== self.item?.button?.window,
+                      window.level < .popUpMenu {
+                self.closePopover()
+            }
+            return event
+        }
+    }
+
+    private func closePopover() {
+        guard let store, !store.isPresentingDialog else { return }
+        popover.performClose(nil)
+        removeDismissMonitors()
+    }
+    private func removeDismissMonitors() {
+        if let outsideMonitor { NSEvent.removeMonitor(outsideMonitor) }
+        if let localMonitor { NSEvent.removeMonitor(localMonitor) }
+        outsideMonitor = nil; localMonitor = nil
+    }
+    func popoverDidShow(_ notification: Notification) {
+        if CommandLine.arguments.contains("--ui-check") { print("UI: popover shown"); fflush(stdout) }
+    }
+    func popoverShouldClose(_ popover: NSPopover) -> Bool { !store.isPresentingDialog }
+    func popoverDidClose(_ notification: Notification) {
+        removeDismissMonitors()
+        if CommandLine.arguments.contains("--ui-check") { print("UI: popover closed"); fflush(stdout) }
+    }
+    func applicationDidResignActive(_ notification: Notification) { closePopover() }
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if !popover.isShown { togglePopover() }
+        return false
+    }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
-    func applicationWillTerminate(_ notification: Notification) { notch?.stop(); store?.stop() }
+    func applicationWillTerminate(_ notification: Notification) { removeDismissMonitors(); store?.stop() }
 }

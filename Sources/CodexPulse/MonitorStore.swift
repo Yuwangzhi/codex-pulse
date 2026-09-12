@@ -2,15 +2,24 @@ import AppKit
 import CodexPulseCore
 import Combine
 import ServiceManagement
+import SwiftUI
 
 @MainActor
 final class MonitorStore: ObservableObject {
     @Published var selectedTab = 0
     @Published var taskFilter = "全部"
     @Published var showExtraQuotas = false
-    @Published var notchEnabled = UserDefaults.standard.object(forKey: "notchEnabled") as? Bool ?? true {
-        didSet { if !isDemo { UserDefaults.standard.set(notchEnabled, forKey: "notchEnabled") } }
+    @Published var searchText = ""
+    @Published var sessionSort: SessionSort = .activity
+    @Published var expandedSessionID: String?
+    @Published var theme = UserDefaults.standard.string(forKey: "theme") ?? "跟随系统" {
+        didSet { if !isDemo { UserDefaults.standard.set(theme, forKey: "theme") } }
     }
+    @Published var compactStatus = UserDefaults.standard.bool(forKey: "compactStatus") {
+        didSet { if !isDemo { UserDefaults.standard.set(compactStatus, forKey: "compactStatus") } }
+    }
+    var isPresentingDialog = false
+    var dismissPanel: (() -> Void)?
     @Published var sessions: [SessionInfo] = []
     @Published var quota: QuotaResponse?
     @Published var usage: AccountUsage?
@@ -31,8 +40,8 @@ final class MonitorStore: ObservableObject {
     private let rpc = RPCClient()
     private var local: LocalSessions
     private var localBusy = false
-    private var quotaBusy = false
-    private var usageBusy = false
+    @Published private(set) var quotaBusy = false
+    @Published private(set) var usageBusy = false
     private var timer: Timer?
     private var tick = 0
     private var stopping = false
@@ -40,6 +49,14 @@ final class MonitorStore: ObservableObject {
 
     var runningCount: Int { sessions.filter { $0.state == .running }.count }
     var quietCount: Int { sessions.filter { $0.state == .quiet }.count }
+    var completedCount: Int { sessions.filter { $0.state == .completed }.count }
+    var colorScheme: ColorScheme? { theme == "深色" ? .dark : (theme == "浅色" ? .light : nil) }
+    var refreshing: Bool { quotaBusy || usageBusy }
+    var filteredSessions: [SessionInfo] {
+        let state: TaskState? = [.running, .quiet, .completed, .interrupted, .unknown].first { $0.label == taskFilter }
+        return SessionQuery.results(sessions, search: searchText, state: state, sort: sessionSort)
+    }
+    func showTasks(_ filter: String) { taskFilter = filter; searchText = ""; selectedTab = 1 }
     var quotaStale: Bool { quotaUpdated.map { now.timeIntervalSince($0) > 120 } ?? true }
     var statusLabel: String {
         let active = localError == nil ? "\(runningCount)" : "?"
@@ -165,6 +182,8 @@ final class MonitorStore: ObservableObject {
     }
 
     func chooseCLI() {
+        isPresentingDialog = true
+        defer { isPresentingDialog = false }
         let panel = NSOpenPanel(); panel.canChooseDirectories = false; panel.allowsMultipleSelection = false
         panel.message = "选择 Codex CLI 可执行文件"
         if panel.runModal() == .OK, let url = panel.url { executablePath = url.path }
@@ -183,6 +202,8 @@ final class MonitorStore: ObservableObject {
 
     private func loadDemo() {
         quota = try? JSONDecoder().decode(QuotaResponse.self, from: Data(#"{"rateLimits":{"limitId":"codex","primary":{"usedPercent":28,"windowDurationMins":300,"resetsAt":1893456000},"secondary":{"usedPercent":42,"windowDurationMins":10080,"resetsAt":1893801600},"credits":{"hasCredits":true,"unlimited":false,"balance":"128.50"},"planType":"pro"},"ordinaryUsageAllowed":true,"rateLimitResetCredits":{"availableCount":1}}"#.utf8))
+        quota?.rateLimits.primary?.resetsAt = Date().addingTimeInterval(7200).timeIntervalSince1970
+        quota?.rateLimits.secondary?.resetsAt = Date().addingTimeInterval(3 * 86400).timeIntervalSince1970
         usage = try? JSONDecoder().decode(AccountUsage.self, from: Data(#"{"summary":{"lifetimeTokens":124800000,"peakDailyTokens":12400000,"currentStreakDays":12},"dailyUsageBuckets":[{"startDate":"2026-09-06","tokens":3100000},{"startDate":"2026-09-07","tokens":6500000},{"startDate":"2026-09-08","tokens":4200000},{"startDate":"2026-09-09","tokens":9200000},{"startDate":"2026-09-10","tokens":7800000},{"startDate":"2026-09-11","tokens":12400000},{"startDate":"2026-09-12","tokens":8600000}]}"#.utf8))
         let titles = ["构建 macOS 菜单栏应用", "验证数据处理流水线", "整理研究笔记"]
         sessions = titles.enumerated().map { i, title in

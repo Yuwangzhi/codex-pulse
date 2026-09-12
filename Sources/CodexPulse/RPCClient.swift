@@ -66,7 +66,7 @@ final class RPCClient {
         process = task; input = stdin.fileHandleForWriting; output = stdout.fileHandleForReading
         do {
             try task.run()
-            request("initialize", params: ["clientInfo": ["name": "codex_pulse", "version": "0.1.0"],
+            request("initialize", params: ["clientInfo": ["name": "codex_pulse", "version": "0.2.0"],
                                            "capabilities": ["experimentalApi": true]]) { [weak self] result in
                 guard let self else { return }
                 switch result {
