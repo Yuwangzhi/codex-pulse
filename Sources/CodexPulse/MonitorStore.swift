@@ -8,6 +8,9 @@ final class MonitorStore: ObservableObject {
     @Published var selectedTab = 0
     @Published var taskFilter = "全部"
     @Published var showExtraQuotas = false
+    @Published var notchEnabled = UserDefaults.standard.object(forKey: "notchEnabled") as? Bool ?? true {
+        didSet { if !isDemo { UserDefaults.standard.set(notchEnabled, forKey: "notchEnabled") } }
+    }
     @Published var sessions: [SessionInfo] = []
     @Published var quota: QuotaResponse?
     @Published var usage: AccountUsage?

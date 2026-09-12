@@ -2,6 +2,10 @@
 
 一个原生 macOS 菜单栏小工具，随时查看 Codex 任务、账号额度与 Token 使用情况。SwiftUI + AppKit，中文界面，支持系统浅色 / 深色外观，无第三方运行时依赖。
 
+支持 **刘海灵动岛**：收起时在摄像头两侧显示任务数和剩余额度；悬停展开，移开鼠标后收起，点击图钉可固定。展开面板显示最近任务、积分和额度，点击“详细面板”进入完整界面。
+
+![刘海灵动岛，展开状态，演示数据](docs/notch-expanded.png)
+
 ![Codex Pulse 演示界面](docs/preview-dark.png)
 
 ## 能看到什么
@@ -11,6 +15,7 @@
 - **任务**：本机最近 60 个未归档会话的标题、项目、模型、活动、执行状态、本轮 / 会话累计 Token、最近输入上下文占比。
 - **账号使用**：累计 Token、连续使用天数、最近 7 个有记录日期的 Token 柱状图。
 - **设置**：登录时启动、自定义 Codex 数据目录与 CLI 路径。开机启动默认关闭。
+- **刘海灵动岛**：默认开启，可在设置中关闭。通过 macOS 屏幕安全区域识别带刘海的显示器，适配多屏与屏幕配置变化；无刘海的显示器使用菜单栏入口。
 
 ## 运行
 
@@ -22,7 +27,7 @@ cd codex-pulse
 ./scripts/build.sh --install
 ```
 
-脚本构建 `dist/Codex Pulse.app`，复制到 `~/Applications/Codex Pulse.app` 并启动。应用只在菜单栏显示，不占 Dock。若菜单栏被刘海或其他图标挤满，可先隐藏其他菜单栏图标。
+脚本构建 `dist/Codex Pulse.app`，复制到 `~/Applications/Codex Pulse.app` 并启动。应用显示在刘海周围和菜单栏，不占 Dock。更新安装前请先退出旧版本。
 
 仅构建：`./scripts/build.sh`。退出：面板右下角电源按钮。卸载：退出后移除该 App；如果启用了登录时启动，先在设置中关闭。
 
@@ -60,6 +65,7 @@ Pulse 本身不读取、复制或保存 `auth.json`、API Key、账号邮件；�
 "dist/Codex Pulse.app/Contents/MacOS/CodexPulse" --diagnose
 "dist/Codex Pulse.app/Contents/MacOS/CodexPulse" --demo --preview
 "dist/Codex Pulse.app/Contents/MacOS/CodexPulse" --demo --dark --screenshot /tmp/pulse-dark.png
+"dist/Codex Pulse.app/Contents/MacOS/CodexPulse" --demo --expanded --notch-screenshot /tmp/pulse-notch.png
 ```
 
 `--diagnose` 运行 20 秒后退出，仅输出连接成功与否、记录数量等摘要，不输出标题、账号 ID、积分或日志正文。演示模式不连接 CLI 或读取本机会话。`scripts/swift-tool.sh` 为部分 Command Line Tools 版本补全其自带 SwiftPM 框架搜索路径，所有设置仅影响当前构建进程。

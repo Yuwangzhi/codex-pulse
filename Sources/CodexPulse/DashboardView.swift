@@ -261,6 +261,9 @@ struct DashboardView: View {
     private var settings: some View {
         VStack(alignment: .leading, spacing: 18) {
             sectionTitle("偏好设置", detail: "本机读取，无需额外 API Key")
+            Toggle("刘海灵动岛", isOn: $store.notchEnabled).font(.system(size: 12))
+            Text("悬停展开，移开收起；点击图钉固定。仅显示在带刘海的内屏，外接显示器仍可使用菜单栏。")
+                .font(.system(size: 10)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             Toggle("登录时启动 Codex Pulse", isOn: Binding(get: { store.loginEnabled }, set: { store.toggleLogin($0) }))
                 .font(.system(size: 12)).disabled(store.isDemo)
             Divider()

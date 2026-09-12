@@ -21,6 +21,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var store: MonitorStore!
     private var cancellable: AnyCancellable?
     private var preview: NSWindow?
+    private var notch: NotchController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let args = CommandLine.arguments
@@ -44,8 +45,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 DispatchQueue.main.async { self?.updateStatus() }
             }
             updateStatus()
+            if !args.contains("--screenshot") && !args.contains("--preview") {
+                notch = NotchController(store: store)
+                notch?.onDetails = { [weak self] in self?.togglePopover() }
+            }
         }
         store.start()
+        if demo, let index = args.firstIndex(of: "--notch-screenshot"), args.count > index + 1 {
+            let path = args[index + 1]
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+                self?.notch?.captureDemo(path: path, expanded: args.contains("--expanded"))
+            }
+        }
         if args.contains("--preview") || args.contains("--screenshot") {
             let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 440, height: 670),
                                   styleMask: [.titled, .closable], backing: .buffered, defer: false)
@@ -104,5 +115,5 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
-    func applicationWillTerminate(_ notification: Notification) { store?.stop() }
+    func applicationWillTerminate(_ notification: Notification) { notch?.stop(); store?.stop() }
 }
