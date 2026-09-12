@@ -1,0 +1,10 @@
+.build/
+dist/
+.DS_Store
+.swiftpm/
+*.xcuserstate
+.env*
+auth.json
+*.sqlite*
+*.jsonl
+docs/local-*
