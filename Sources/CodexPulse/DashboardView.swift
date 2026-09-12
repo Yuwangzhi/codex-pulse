@@ -274,8 +274,12 @@ struct DashboardView: View {
                         Spacer()
                         if let context = session.contextPercent { Text("上下文约 \(Int(context))%") }
                     }.font(.system(size: 10)).foregroundStyle(.secondary)
+                    Text(store.projectDirectory(for: session.cwd))
+                        .font(.system(size: 10)).foregroundStyle(.secondary)
+                        .lineLimit(2).textSelection(.enabled).help(store.projectDirectory(for: session.cwd))
                     HStack {
-                        Button { NSWorkspace.shared.open(URL(fileURLWithPath: session.cwd)) } label: { Label("打开项目", systemImage: "folder") }
+                        Button { store.openProjectInFinder(session.cwd) } label: { Label("在 Finder 中打开", systemImage: "folder") }
+                            .disabled(store.openingProject)
                         Spacer()
                         Button { copyID(session.id) } label: { Label("复制会话 ID", systemImage: "doc.on.doc") }
                     }.font(.system(size: 11)).buttonStyle(.plain).foregroundStyle(pulse)
@@ -307,7 +311,8 @@ struct DashboardView: View {
                 }.font(.system(size: 9)).foregroundStyle(.secondary.opacity(0.75))
             }
         }.contentShape(Rectangle()).contextMenu {
-            Button("在 Finder 中打开项目") { NSWorkspace.shared.open(URL(fileURLWithPath: session.cwd)) }
+            Button("在 Finder 中打开") { store.openProjectInFinder(session.cwd) }.disabled(store.openingProject)
+            Button("更改项目目录…") { store.chooseProjectDirectory(session.cwd) }.disabled(store.openingProject)
             Button("复制会话 ID") { copyID(session.id) }
         }
     }
@@ -350,7 +355,7 @@ struct DashboardView: View {
             Text("数据仅在本机展示。Pulse 不发起模型任务、不读取登录凭据，也不消费额度重置次数。")
                 .font(.system(size: 10)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             HStack {
-                Text("Codex Pulse 0.2.0").foregroundStyle(.secondary)
+                Text("Codex Pulse 0.2.1").foregroundStyle(.secondary)
                 Spacer()
                 Link("接口说明 ↗", destination: URL(string: "https://learn.chatgpt.com/docs/app-server")!)
             }.font(.system(size: 10))

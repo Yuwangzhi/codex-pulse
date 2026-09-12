@@ -20,6 +20,9 @@ final class MonitorStore: ObservableObject {
     }
     var isPresentingDialog = false
     var dismissPanel: (() -> Void)?
+    @Published var projectDirectories = UserDefaults.standard.dictionary(forKey: "projectDirectories") as? [String: String] ?? [:]
+    @Published var openingProject = false
+    var projectOpenRequest: UUID?
     @Published var sessions: [SessionInfo] = []
     @Published var quota: QuotaResponse?
     @Published var usage: AccountUsage?
