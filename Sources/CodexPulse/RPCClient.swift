@@ -20,9 +20,10 @@ final class RPCClient {
         var errorDescription: String? { if case .failure(let text) = self { return text }; return nil }
     }
 
-    static func locateCLI() -> URL? {
+    static func locateCLI(preferred: String = "") -> URL? {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         var candidates: [String] = []
+        if !preferred.isEmpty { candidates.append((preferred as NSString).expandingTildeInPath) }
         if let custom = UserDefaults.standard.string(forKey: "codexExecutable"), !custom.isEmpty { candidates.append(custom) }
         if let path = ProcessInfo.processInfo.environment["PATH"] {
             candidates += path.split(separator: ":").map { String($0) + "/codex" }
@@ -32,9 +33,9 @@ final class RPCClient {
         return candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) }).map { URL(fileURLWithPath: $0) }
     }
 
-    func start(home: URL) {
+    func start(home: URL, cliPath: String = "") {
         stop()
-        guard let executable = Self.locateCLI() else {
+        guard let executable = Self.locateCLI(preferred: cliPath) else {
             onDisconnect?("找不到 Codex CLI，请在设置中选择 codex 可执行文件。")
             return
         }
@@ -66,7 +67,7 @@ final class RPCClient {
         process = task; input = stdin.fileHandleForWriting; output = stdout.fileHandleForReading
         do {
             try task.run()
-            request("initialize", params: ["clientInfo": ["name": "codex_pulse", "version": "0.2.1"],
+            request("initialize", params: ["clientInfo": ["name": "codex_pulse", "version": "0.3.0"],
                                            "capabilities": ["experimentalApi": true]]) { [weak self] result in
                 guard let self else { return }
                 switch result {

@@ -9,6 +9,6 @@ let package = Package(
         .systemLibrary(name: "CSQLite"),
         .target(name: "CodexPulseCore", dependencies: ["CSQLite"]),
         .executableTarget(name: "CodexPulse", dependencies: ["CodexPulseCore"]),
-        .testTarget(name: "CodexPulseCoreTests", dependencies: ["CodexPulseCore"])
+        .testTarget(name: "CodexPulseCoreTests", dependencies: ["CodexPulseCore", "CSQLite"])
     ]
 )

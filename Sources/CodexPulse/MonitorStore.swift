@@ -4,8 +4,16 @@ import Combine
 import ServiceManagement
 import SwiftUI
 
+/// Coordinates the monitored accounts and exposes the selected account's state to the UI.
+///
+/// Each account keeps its own `AccountRuntime` (its own connection, logs and snapshots). Only the
+/// selected account is polled at full cadence and may hold an app-server process. DeepSeek
+/// balances of background accounts are still refreshed on a slow timer because that is one cheap
+/// HTTPS request; background Codex accounts keep their cached snapshot until you switch to them.
 @MainActor
 final class MonitorStore: ObservableObject {
+    // MARK: - Panel state
+
     @Published var selectedTab = 0
     @Published var taskFilter = "全部"
     @Published var showExtraQuotas = false
@@ -23,74 +31,132 @@ final class MonitorStore: ObservableObject {
     @Published var projectDirectories = UserDefaults.standard.dictionary(forKey: "projectDirectories") as? [String: String] ?? [:]
     @Published var openingProject = false
     var projectOpenRequest: UUID?
-    @Published var sessions: [SessionInfo] = []
-    @Published var quota: QuotaResponse?
-    @Published var usage: AccountUsage?
-    @Published var connected = false
-    @Published var connectionMessage = "正在连接 Codex…"
-    @Published var localError: String?
-    @Published var quotaError: String?
-    @Published var usageError: String?
-    @Published var quotaUpdated: Date?
-    @Published var usageUpdated: Date?
-    @Published var localUpdated: Date?
     @Published var now = Date()
     @Published var settingsError: String?
     @Published var loginEnabled = SMAppService.mainApp.status == .enabled
-    @Published var homePath: String
-    @Published var executablePath: String
+
+    // MARK: - Accounts
+
+    @Published private(set) var accounts: [AccountConfig] = []
+    @Published private(set) var selectedID: UUID?
+    @Published var showAccountEditor = false
+    @Published private(set) var editingID: UUID?
+    @Published var draftName = ""
+    @Published var draftKind: AccountKind = .codex {
+        didSet { if draftKind != oldValue { refreshDraftNote() } }
+    }
+    @Published var draftHome = ""
+    @Published var draftCLI = ""
+    @Published var draftBaseURL = ""
+    @Published var draftBalancePath = ""
+    @Published var draftKey = ""
+    @Published var draftHasStoredKey = false
+    @Published var draftNote: String?
+    @Published var accountStatus: String?
+
     let isDemo: Bool
-    private let rpc = RPCClient()
-    private var local: LocalSessions
-    private var localBusy = false
-    @Published private(set) var quotaBusy = false
-    @Published private(set) var usageBusy = false
+
+    // MARK: - Live state
+
+    private var runtimes: [UUID: AccountRuntime] = [:]
+    private var subscriptions: [UUID: AnyCancellable] = [:]
     private var timer: Timer?
-    private var tick = 0
     private var stopping = false
-    private var localGeneration = UUID()
+
+    var selectedRuntime: AccountRuntime? { selectedID.flatMap { runtimes[$0] } }
+    var selectedAccount: AccountConfig? { accounts.first { $0.id == selectedID } }
+
+    var sessions: [SessionInfo] { selectedRuntime?.sessions ?? [] }
+    var quota: QuotaResponse? { selectedRuntime?.quota }
+    var usage: AccountUsage? { selectedRuntime?.accountUsage }
+    var localUsage: UsageSnapshot? { selectedRuntime?.usage }
+    var balance: DeepSeekBalance? { selectedRuntime?.balance }
+    var connected: Bool { selectedRuntime?.connected ?? false }
+    var connectionMessage: String { selectedRuntime?.connectionMessage ?? "尚未连接" }
+    var localError: String? { selectedRuntime?.localError }
+    var quotaError: String? { selectedRuntime?.quotaError }
+    var usageError: String? { selectedRuntime?.usageError }
+    var balanceError: String? { selectedRuntime?.balanceError }
+    var localUpdated: Date? { selectedRuntime?.localUpdated }
+    var quotaUpdated: Date? { selectedRuntime?.quotaUpdated }
+    var usageUpdated: Date? { selectedRuntime?.usageUpdated }
+    var balanceUpdated: Date? { selectedRuntime?.balanceUpdated }
+    var credentialNotice: String? { selectedRuntime?.credentialNotice }
+    var observedSpend: Double? { selectedRuntime?.observedSpend }
+    var isDeepSeek: Bool { selectedAccount?.kind == .deepseek }
+    var isCodex: Bool { (selectedAccount?.kind ?? .codex) == .codex }
 
     var runningCount: Int { sessions.filter { $0.state == .running }.count }
     var quietCount: Int { sessions.filter { $0.state == .quiet }.count }
     var completedCount: Int { sessions.filter { $0.state == .completed }.count }
     var colorScheme: ColorScheme? { theme == "深色" ? .dark : (theme == "浅色" ? .light : nil) }
-    var refreshing: Bool { quotaBusy || usageBusy }
+    var refreshing: Bool {
+        guard let runtime = selectedRuntime else { return false }
+        return runtime.quotaBusy || runtime.usageBusy || runtime.balanceBusy
+    }
     var filteredSessions: [SessionInfo] {
         let state: TaskState? = [.running, .quiet, .completed, .interrupted, .unknown].first { $0.label == taskFilter }
         return SessionQuery.results(sessions, search: searchText, state: state, sort: sessionSort)
     }
     func showTasks(_ filter: String) { taskFilter = filter; searchText = ""; selectedTab = 1 }
+
     var quotaStale: Bool { quotaUpdated.map { now.timeIntervalSince($0) > 120 } ?? true }
+    var balanceStale: Bool { balanceUpdated.map { now.timeIntervalSince($0) > 180 } ?? true }
+
+    /// Menu bar text: active tasks plus the selected account's primary number.
     var statusLabel: String {
         let active = localError == nil ? "\(runningCount)" : "?"
-        guard let remaining = quota?.rateLimits.primary?.remaining, !quotaStale, quotaError == nil, connected else { return "\(active) · —" }
-        return "\(active) · \(Int(remaining))%"
+        switch selectedAccount?.kind ?? .codex {
+        case .codex:
+            guard let remaining = quota?.rateLimits.primary?.remaining, !quotaStale, quotaError == nil, connected else {
+                return "\(active) · —"
+            }
+            return "\(active) · \(Int(remaining))%"
+        case .deepseek:
+            guard let amount = balance?.amount, !balanceStale, balanceError == nil else { return "\(active) · —" }
+            return "\(active) · \(DisplayFormat.money(amount, currency: balance?.primary?.currency ?? "CNY"))"
+        }
     }
+
+    var statusTooltip: String {
+        "Codex Pulse · \(selectedAccount?.displayName ?? "未选择账户") · \(runningCount) 个活跃任务"
+    }
+
+    var headerStatusText: String {
+        switch selectedAccount?.kind ?? .codex {
+        case .codex: return "已连接 · 本机任务实时监测"
+        case .deepseek: return "DeepSeek · 余额每 30 秒 · 用量每 2 秒"
+        }
+    }
+
+    // MARK: - Init
 
     init(demo: Bool = false) {
         isDemo = demo
-        let home = Self.configuredHome()
-        homePath = home.path
-        executablePath = RPCClient.locateCLI()?.path ?? ""
-        local = LocalSessions(home: home)
-        if demo { loadDemo(); return }
-        rpc.onReady = { [weak self] in
-            guard let self else { return }
-            self.connected = true; self.connectionMessage = "已连接 Codex"
-            self.refreshQuota(); self.refreshUsage()
-        }
-        rpc.onDisconnect = { [weak self] message in
-            guard let self, !self.stopping else { return }
-            self.connected = false; self.connectionMessage = message
-        }
-        rpc.onNotification = { [weak self] method, _ in
-            if method == "account/rateLimits/updated" { self?.refreshQuota() }
-            if method == "account/updated" {
-                // Do not leave another account's balances on screen after a login switch.
-                self?.quota = nil; self?.usage = nil
-                self?.quotaUpdated = nil; self?.usageUpdated = nil
-                self?.refreshQuota(); self?.refreshUsage()
+        if demo {
+            loadDemo()
+        } else {
+            let stored = UserDefaults.standard.data(forKey: AccountRegistry.accountsKey)
+            let loaded = AccountRegistry.load()
+            accounts = loaded.accounts
+            selectedID = loaded.selected
+            for account in accounts { _ = runtime(for: account) }
+            // Persist a migrated single-account setup so its identifier (and therefore its
+            // balance history) stays stable across launches.
+            if stored == nil || AccountRegistry.decode(stored).isEmpty {
+                AccountRegistry.save(accounts, selected: selectedID)
             }
+            Self.pruneOrphanBalanceHistory(accounts)
+        }
+    }
+
+    /// Balance samples belong to an account identifier. Deleting an account, or a build that
+    /// generated a fresh identifier, would otherwise leave unreadable entries behind forever.
+    private static func pruneOrphanBalanceHistory(_ accounts: [AccountConfig]) {
+        let valid = Set(accounts.map { "balanceHistory." + $0.id.uuidString })
+        for key in UserDefaults.standard.dictionaryRepresentation().keys
+        where key.hasPrefix("balanceHistory.") && !valid.contains(key) {
+            UserDefaults.standard.removeObject(forKey: key)
         }
     }
 
@@ -103,85 +169,217 @@ final class MonitorStore: ObservableObject {
 
     func start() {
         guard !isDemo else { return }
-        rpc.start(home: Self.configuredHome()); refreshLocal()
+        selectedRuntime?.startLive()
         timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
             Task { @MainActor in
-                guard let self else { return }
-                self.now = Date(); self.tick += 1; self.refreshLocal()
-                if self.tick % 30 == 0 { self.refreshQuota() }
-                if self.tick % 150 == 0 { self.refreshUsage() }
-                if !self.connected && self.tick % 20 == 0 { self.rpc.start(home: Self.configuredHome()) }
+                guard let self, !self.stopping else { return }
+                self.now = Date()
+                for (id, runtime) in self.runtimes {
+                    runtime.tick(role: id == self.selectedID ? .selected : .background)
+                }
             }
         }
     }
 
-    func stop() { stopping = true; timer?.invalidate(); rpc.stop() }
+    func stop() {
+        stopping = true
+        timer?.invalidate()
+        for runtime in runtimes.values { runtime.stopLive() }
+    }
 
     func refresh() {
         guard !isDemo else { return }
-        refreshLocal()
-        if !connected { rpc.start(home: Self.configuredHome()) }
-        else { refreshQuota(); refreshUsage() }
-    }
-
-    private func refreshLocal() {
-        guard !localBusy else { return }
-        localBusy = true
-        let reader = local, generation = localGeneration
-        Task { [weak self] in
-            let result: Result<[SessionInfo], Error>
-            do { result = .success(try await reader.read()) } catch { result = .failure(error) }
-            guard let self, self.localGeneration == generation else { return }
-            self.localBusy = false
-            switch result {
-            case .success(let sessions): self.sessions = sessions; self.localError = nil; self.localUpdated = Date()
-            case .failure(let error):
-                self.localError = error.localizedDescription
-                self.sessions = self.sessions.map { var item = $0; item.state = .unknown; return item }
-            }
+        now = Date()
+        for (id, runtime) in runtimes {
+            runtime.refreshAll(role: id == selectedID ? .selected : .background)
         }
     }
 
-    private func refreshQuota() {
-        guard rpc.ready, !quotaBusy else { return }
-        quotaBusy = true
-        rpc.request("account/rateLimits/read") { [weak self] result in
-            guard let self else { return }; self.quotaBusy = false
-            switch result.flatMap({ data in Result { try JSONDecoder().decode(QuotaResponse.self, from: data) } }) {
-            case .success(let quota): self.quota = quota; self.quotaUpdated = Date(); self.quotaError = nil
-            case .failure: self.quotaError = "额度读取失败；保留上次快照，请在 Codex 中确认登录状态。"
+    func refreshAllAccounts() {
+        guard !isDemo else { return }
+        refresh()
+        accountStatus = "已请求刷新：选中账户读取额度与用量，后台账户读取余额/保留上次快照。"
+    }
+
+    // MARK: - Runtime plumbing
+
+    @discardableResult
+    private func runtime(for account: AccountConfig) -> AccountRuntime {
+        if let existing = runtimes[account.id] { return existing }
+        let runtime = AccountRuntime(config: account)
+        // Forward nested changes so SwiftUI and the status item keep redrawing.
+        subscriptions[account.id] = runtime.objectWillChange.sink { [weak self] in self?.objectWillChange.send() }
+        runtimes[account.id] = runtime
+        return runtime
+    }
+
+    func selectAccount(_ id: UUID) {
+        guard selectedID != id, let account = accounts.first(where: { $0.id == id }) else { return }
+        if isDemo {
+            // The demo already holds a populated runtime per account; switching is display only.
+            selectedID = id
+            searchText = ""; expandedSessionID = nil; now = Date()
+            return
+        }
+        if let previous = selectedID { runtimes[previous]?.stopLive() }
+        selectedID = id
+        AccountRegistry.save(accounts, selected: id)
+        searchText = ""; expandedSessionID = nil
+        runtime(for: account).startLive()
+        now = Date()
+    }
+
+    /// One line per account for the settings list: live value when available, otherwise the reason.
+    func accountSummary(_ account: AccountConfig) -> String {
+        guard let runtime = runtimes[account.id] else { return "尚未启用" }
+        switch account.kind {
+        case .codex:
+            if let remaining = runtime.quota?.rateLimits.primary?.remaining {
+                return "额度剩余 \(Int(remaining))% · \(DisplayFormat.age(runtime.quotaUpdated, now: now))同步"
             }
+            if runtime.quotaError != nil { return "额度接口不可用（该目录需要 Codex 登录）" }
+            return runtime.connectionMessage
+        case .deepseek:
+            if let balance = runtime.balance {
+                return "余额 \(balance.display) · \(DisplayFormat.age(runtime.balanceUpdated, now: now))同步"
+            }
+            if let error = runtime.balanceError { return error }
+            return runtime.isLive ? "正在读取余额…" : "切换到该账户后开始刷新"
         }
     }
 
-    private func refreshUsage() {
-        guard rpc.ready, !usageBusy else { return }
-        usageBusy = true
-        rpc.request("account/usage/read") { [weak self] result in
-            guard let self else { return }; self.usageBusy = false
-            switch result.flatMap({ data in Result { try JSONDecoder().decode(AccountUsage.self, from: data) } }) {
-            case .success(let usage): self.usage = usage; self.usageUpdated = Date(); self.usageError = nil
-            case .failure: self.usageError = "账号用量暂不可用；此接口需要受支持的 Codex 登录方式。"
-            }
+    // MARK: - Account editing
+
+    func beginAddAccount() {
+        editingID = nil
+        draftName = ""; draftKind = .codex; draftCLI = ""; draftKey = ""; draftHasStoredKey = false
+        draftHome = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex").path
+        draftBaseURL = ""; draftBalancePath = ""
+        draftNote = nil
+        showAccountEditor = true
+        refreshDraftNote()
+    }
+
+    func beginEditAccount(_ account: AccountConfig) {
+        editingID = account.id
+        draftName = account.name; draftKind = account.kind; draftHome = account.home
+        draftCLI = account.cliPath; draftBaseURL = account.baseURL; draftBalancePath = account.balancePath
+        draftKey = ""; draftHasStoredKey = account.hasStoredKey
+        showAccountEditor = true
+        refreshDraftNote()
+    }
+
+    func cancelAccountEditor() {
+        showAccountEditor = false
+        draftKey = ""
+        draftNote = nil
+    }
+
+    /// Reads the account's own `config.toml` for display: which provider was found and whether a
+    /// credential is available there. The token value itself is never read into the UI.
+    func refreshDraftNote() {
+        let home = URL(fileURLWithPath: (draftHome as NSString).expandingTildeInPath)
+        let configURL = home.appendingPathComponent("config.toml")
+        guard let text = try? String(contentsOf: configURL, encoding: .utf8) else {
+            draftNote = "未找到 \(configURL.path)"
+            return
+        }
+        let scan = ProviderConfig.scan(text)
+        let active = scan.activeProvider.isEmpty ? "未设置" : scan.activeProvider
+        if let entry = scan.activeEntry ?? scan.entries.first(where: \.isDeepSeek) {
+            let token = entry.bearerToken.isEmpty ? "未配置 bearer token" : "已有 bearer token"
+            let envKey = entry.envKey.isEmpty ? "" : " · env_key \(entry.envKey)"
+            draftNote = "model_provider · \(active) · provider「\(entry.name)」\(token)\(envKey)"
+        } else {
+            draftNote = "model_provider · \(active) · 未在 config.toml 中找到 provider 凭据"
         }
     }
 
-    func applySettings() {
-        let home = URL(fileURLWithPath: (homePath as NSString).expandingTildeInPath)
+    func saveDraftAccount() {
+        let home = (draftHome as NSString).expandingTildeInPath.trimmingCharacters(in: .whitespaces)
         var directory: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: home.path, isDirectory: &directory), directory.boolValue else {
+        guard !home.isEmpty, FileManager.default.fileExists(atPath: home, isDirectory: &directory), directory.boolValue else {
             settingsError = "请选择存在的 Codex 数据目录。"; return
         }
-        guard executablePath.isEmpty || FileManager.default.isExecutableFile(atPath: executablePath) else {
+        let cli = (draftCLI as NSString).expandingTildeInPath.trimmingCharacters(in: .whitespaces)
+        guard cli.isEmpty || FileManager.default.isExecutableFile(atPath: cli) else {
             settingsError = "Codex CLI 路径不是可执行文件。"; return
         }
-        UserDefaults.standard.set(home.path, forKey: "codexHome")
-        UserDefaults.standard.set(executablePath, forKey: "codexExecutable")
-        localGeneration = UUID(); localBusy = false
-        local = LocalSessions(home: home); sessions = []; quota = nil; usage = nil
-        quotaUpdated = nil; usageUpdated = nil; localUpdated = nil; settingsError = nil
-        connected = false; connectionMessage = "正在重新连接…"
-        rpc.start(home: home); refreshLocal()
+        let name = draftName.trimmingCharacters(in: .whitespaces)
+        var account: AccountConfig
+        if let editingID, let index = accounts.firstIndex(where: { $0.id == editingID }) {
+            account = accounts[index]
+            account.name = name.isEmpty ? draftKind.label : name
+            account.kind = draftKind
+            account.home = home
+            account.cliPath = cli
+            account.baseURL = draftBaseURL.trimmingCharacters(in: .whitespaces)
+            account.balancePath = draftBalancePath.trimmingCharacters(in: .whitespaces)
+            accounts[index] = account
+        } else if let duplicate = accounts.first(where: { $0.expandedHome.path == home && $0.kind == draftKind }) {
+            settingsError = "「\(duplicate.displayName)」已经使用这个目录与类型，本次未新增账户。"
+            showAccountEditor = false
+            return
+        } else {
+            account = AccountConfig(name: name.isEmpty ? draftKind.label : name, kind: draftKind, home: home, cliPath: cli,
+                                    baseURL: draftBaseURL.trimmingCharacters(in: .whitespaces),
+                                    balancePath: draftBalancePath.trimmingCharacters(in: .whitespaces))
+            accounts.append(account)
+            _ = runtime(for: account)
+        }
+        if account.kind == .deepseek {
+            if !draftKey.trimmingCharacters(in: .whitespaces).isEmpty {
+                let stored = KeychainStore.setKey(draftKey, for: account.id)
+                account.hasStoredKey = stored
+                if !stored { settingsError = "API Key 未能写入钥匙串，将尝试使用 config.toml 中的凭据。" }
+            } else if draftHasStoredKey {
+                account.hasStoredKey = KeychainStore.key(for: account.id) != nil
+            }
+            if let index = accounts.firstIndex(where: { $0.id == account.id }) { accounts[index] = account }
+        }
+        draftKey = ""
+        runtimes[account.id]?.update(config: account)
+        if selectedID == nil {
+            selectedID = account.id
+            accountStatus = "已选择「\(account.displayName)」作为当前账户。"
+        }
+        AccountRegistry.save(accounts, selected: selectedID)
+        if selectedID == account.id, runtimes[account.id]?.isLive != true { runtimes[account.id]?.startLive() }
+        showAccountEditor = false
+        if settingsError == nil { accountStatus = "已保存「\(account.displayName)」。" }
+    }
+
+    func deleteAccount(_ id: UUID) {
+        guard !isDemo, let index = accounts.firstIndex(where: { $0.id == id }) else { return }
+        guard accounts.count > 1 else {
+            settingsError = "至少保留一个账户。"
+            return
+        }
+        runtimes[id]?.stopLive()
+        runtimes[id] = nil
+        subscriptions[id] = nil
+        KeychainStore.setKey(nil, for: id)
+        UserDefaults.standard.removeObject(forKey: "balanceHistory." + id.uuidString)
+        accounts.remove(at: index)
+        if selectedID == id {
+            selectedID = accounts.first?.id
+            if let next = selectedID, let account = accounts.first(where: { $0.id == next }) {
+                runtime(for: account).startLive()
+            }
+        }
+        AccountRegistry.save(accounts, selected: selectedID)
+        accountStatus = "已删除账户。"
+    }
+
+    func clearStoredKey(for id: UUID) {
+        KeychainStore.setKey(nil, for: id)
+        if let index = accounts.firstIndex(where: { $0.id == id }) {
+            accounts[index].hasStoredKey = false
+            runtimes[id]?.update(config: accounts[index])
+        }
+        draftHasStoredKey = false
+        AccountRegistry.save(accounts, selected: selectedID)
+        accountStatus = "已清除该账户在本机保存的 API Key。"
     }
 
     func chooseCLI() {
@@ -189,7 +387,21 @@ final class MonitorStore: ObservableObject {
         defer { isPresentingDialog = false }
         let panel = NSOpenPanel(); panel.canChooseDirectories = false; panel.allowsMultipleSelection = false
         panel.message = "选择 Codex CLI 可执行文件"
-        if panel.runModal() == .OK, let url = panel.url { executablePath = url.path }
+        if panel.runModal() == .OK, let url = panel.url { draftCLI = url.path }
+    }
+
+    func chooseAccountHome() {
+        isPresentingDialog = true
+        defer { isPresentingDialog = false }
+        let panel = NSOpenPanel(); panel.canChooseDirectories = true; panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.message = "选择该账户的 Codex 数据目录（通常包含 config.toml 与 state_*.sqlite）"
+        let start = URL(fileURLWithPath: (draftHome as NSString).expandingTildeInPath)
+        if FileManager.default.fileExists(atPath: start.path) { panel.directoryURL = start }
+        if panel.runModal() == .OK, let url = panel.url {
+            draftHome = url.path
+            refreshDraftNote()
+        }
     }
 
     func toggleLogin(_ enabled: Bool) {
@@ -200,22 +412,70 @@ final class MonitorStore: ObservableObject {
                 settingsError = "请在系统设置 → 通用 → 登录项中允许 Codex Pulse。"
                 SMAppService.openSystemSettingsLoginItems()
             }
-        } catch { settingsError = "登录项设置失败，请从 Applications 中运行应用后重试。" }
+        } catch { settingsError = "登录项设置失败。请从 Applications 中运行应用后重试。" }
+    }
+
+    // MARK: - Demo data
+
+    /// Machine-readable summary for `--diagnose` / `--usage-check`.
+    /// Credentials are never included: only their source label, values and error text.
+    func diagnostics(detailed: Bool) -> [String: Any] {
+        var summary: [String: Any] = [
+            "demo": isDemo,
+            "accountCount": accounts.count,
+            "selected": selectedAccount?.displayName ?? "",
+            "statusBar": statusLabel
+        ]
+        summary["accounts"] = accounts.map { account -> [String: Any] in
+            var item: [String: Any] = [
+                "name": account.displayName,
+                "kind": account.kind.rawValue,
+                "home": account.expandedHome.lastPathComponent,
+                "directory": account.expandedHome.path,
+                "selected": account.id == selectedID
+            ]
+            guard let runtime = runtimes[account.id] else { return item }
+            item["live"] = runtime.isLive
+            item["connected"] = runtime.connected
+            item["sessions"] = runtime.sessions.count
+            item["runningSessions"] = runtime.sessions.filter { $0.state == .running }.count
+            item["localReadOK"] = runtime.localUpdated != nil
+            item["quotaAvailable"] = runtime.quota != nil
+            item["quotaBuckets"] = runtime.quota?.buckets.count ?? 0
+            if let quota = runtime.quota, detailed {
+                item["quotaPercent"] = quota.buckets.compactMap { $0.primary?.remaining }
+            }
+            if let error = runtime.quotaError { item["quotaError"] = error }
+            item["balanceAvailable"] = runtime.balance != nil
+            if let display = runtime.balance?.display { item["balance"] = display }
+            if let currency = runtime.balance?.primary?.currency { item["balanceCurrency"] = currency }
+            if let error = runtime.balanceError { item["balanceError"] = error }
+            if let spend = runtime.observedSpend { item["observedSpendToday"] = (spend * 10_000).rounded() / 10_000 }
+            if let usage = runtime.usage {
+                item["usageFilesRead"] = usage.filesRead
+                item["usageDays"] = usage.days.count
+                item["usageWindowTokens"] = usage.totalTokens
+                item["usageTodayTokens"] = usage.today?.totalTokens ?? 0
+                item["usageTruncatedFiles"] = usage.truncatedFiles
+                item["usageUnreadableFiles"] = usage.unreadableFiles
+                item["usageModels"] = usage.models.prefix(4).map { "\($0.model):\($0.tokens)" }
+                if detailed { item["usageRecentDays"] = usage.days.suffix(7).map { "\($0.date):\($0.totalTokens)" } }
+            }
+            if detailed { item["credential"] = runtime.credentialNotice ?? "未使用凭据" }
+            return item
+        }
+        return summary
     }
 
     private func loadDemo() {
-        quota = try? JSONDecoder().decode(QuotaResponse.self, from: Data(#"{"rateLimits":{"limitId":"codex","primary":{"usedPercent":28,"windowDurationMins":300,"resetsAt":1893456000},"secondary":{"usedPercent":42,"windowDurationMins":10080,"resetsAt":1893801600},"credits":{"hasCredits":true,"unlimited":false,"balance":"128.50"},"planType":"pro"},"ordinaryUsageAllowed":true,"rateLimitResetCredits":{"availableCount":1}}"#.utf8))
-        quota?.rateLimits.primary?.resetsAt = Date().addingTimeInterval(7200).timeIntervalSince1970
-        quota?.rateLimits.secondary?.resetsAt = Date().addingTimeInterval(3 * 86400).timeIntervalSince1970
-        usage = try? JSONDecoder().decode(AccountUsage.self, from: Data(#"{"summary":{"lifetimeTokens":124800000,"peakDailyTokens":12400000,"currentStreakDays":12},"dailyUsageBuckets":[{"startDate":"2026-09-06","tokens":3100000},{"startDate":"2026-09-07","tokens":6500000},{"startDate":"2026-09-08","tokens":4200000},{"startDate":"2026-09-09","tokens":9200000},{"startDate":"2026-09-10","tokens":7800000},{"startDate":"2026-09-11","tokens":12400000},{"startDate":"2026-09-12","tokens":8600000}]}"#.utf8))
-        let titles = ["构建 macOS 菜单栏应用", "验证数据处理流水线", "整理研究笔记"]
-        sessions = titles.enumerated().map { i, title in
-            var item = SessionInfo(id: "demo-\(i)", title: title, cwd: "/Projects/\(["codex-pulse", "data-pipeline", "research"][i])", model: "Codex", rolloutPath: "", updatedAt: Date(), totalTokens: 126000)
-            item.state = i == 2 ? .completed : .running
-            item.activity = ["正在调用工具 · swift build", "正在运行验证", "本轮任务已完成"][i]
-            item.lastEventAt = Date().addingTimeInterval(-Double(i * 15)); item.turnTokens = 42000
-            return item
-        }
-        connected = true; connectionMessage = "演示数据"; quotaUpdated = Date(); usageUpdated = Date(); localUpdated = Date()
+        let codex = AccountConfig(name: "Codex Pro", kind: .codex, home: "/Demo/codex", providerHint: "openai")
+        let deepseek = AccountConfig(name: "DeepSeek", kind: .deepseek, home: "/Demo/codex",
+                                     baseURL: ProviderConfig.defaultBaseURL, providerHint: "deepseek")
+        accounts = [codex, deepseek]
+        let arguments = CommandLine.arguments
+        let wantCodex = arguments.contains("--kind") && arguments.contains("codex")
+        selectedID = wantCodex ? codex.id : deepseek.id
+        for account in accounts { runtime(for: account).loadDemoData() }
+        now = Date()
     }
 }

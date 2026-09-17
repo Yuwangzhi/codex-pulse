@@ -120,6 +120,24 @@ public enum DisplayFormat {
         if n >= 1_000 { return String(format: "%.1fK", n / 1_000) }
         return String(value)
     }
+    public static func currencySymbol(_ code: String) -> String {
+        switch code.uppercased() {
+        case "CNY", "RMB": return "¥"
+        case "USD": return "$"
+        case "EUR": return "€"
+        default: return code.isEmpty ? "" : code.uppercased() + " "
+        }
+    }
+    /// Money is shown with the currency the service reported; an unknown amount stays unknown.
+    public static func money(_ value: Double?, currency: String, fractionDigits: Int = 2) -> String {
+        guard let value else { return "—" }
+        let number = value.formatted(.number.precision(.fractionLength(fractionDigits)))
+        return currencySymbol(currency) + number
+    }
+    public static func percent(_ value: Double?) -> String {
+        guard let value else { return "—" }
+        return "\(Int(value.rounded()))%"
+    }
     public static func age(_ date: Date?, now: Date = Date()) -> String {
         guard let date else { return "尚未更新" }
         let seconds = max(0, Int(now.timeIntervalSince(date)))

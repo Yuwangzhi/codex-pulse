@@ -40,11 +40,12 @@ struct DashboardView: View {
                 Text("Codex Pulse").font(.system(size: 19, weight: .semibold, design: .rounded))
                 HStack(spacing: 5) {
                     Circle().fill(store.connected ? pulse : .orange).frame(width: 5, height: 5)
-                    Text(store.isDemo ? "演示数据" : (store.connected ? "已连接 · 本机任务实时监测" : store.connectionMessage))
+                    Text(store.isDemo ? "演示数据 · 本地合成" : (store.connected ? store.headerStatusText : store.connectionMessage))
                         .font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
                 }
             }
             Spacer(minLength: 4)
+            accountMenu
             Button { store.dismissPanel?() } label: {
                 Image(systemName: "xmark").font(.system(size: 10, weight: .semibold))
                     .foregroundStyle(.secondary).frame(width: 25, height: 25)
@@ -53,13 +54,45 @@ struct DashboardView: View {
         }
     }
 
+    /// Quick account switching from the panel header. Account management lives in 设置.
+    private var accountMenu: some View {
+        Menu {
+            ForEach(store.accounts) { account in
+                Button {
+                    store.selectAccount(account.id)
+                } label: {
+                    Label("\(account.displayName)（\(account.kind.shortLabel)）",
+                          systemImage: account.id == store.selectedID ? "checkmark.circle.fill" : account.kind.symbol)
+                }
+            }
+            Divider()
+            Button { store.selectedTab = 3; store.beginAddAccount() } label: { Label("添加账户…", systemImage: "plus") }
+            Button { store.refreshAllAccounts() } label: { Label("刷新全部账户", systemImage: "arrow.clockwise") }
+        } label: {
+            HStack(spacing: 5) {
+                Circle().fill(store.isDeepSeek ? Color.orange : pulse).frame(width: 5, height: 5)
+                Text(store.selectedAccount?.displayName ?? "账户")
+                    .font(.system(size: 10, weight: .medium)).lineLimit(1)
+                Text(store.selectedAccount?.kind.shortLabel ?? "")
+                    .font(.system(size: 8, weight: .bold, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                Image(systemName: "chevron.down").font(.system(size: 7, weight: .bold)).foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 8).padding(.vertical, 5)
+            .background(.primary.opacity(0.05), in: Capsule())
+        }
+        .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+        .help("切换监测账户 · 当前 \(store.selectedAccount?.displayName ?? "无")")
+    }
+
     @ViewBuilder private var overview: some View {
         HStack(spacing: 10) {
             metric("执行中", count: store.runningCount, icon: "bolt.fill", color: pulse)
             metric("待确认", count: store.quietCount, icon: "clock", color: .orange)
             metric("已完成", count: store.completedCount, icon: "checkmark.circle", color: .secondary)
         }
-        quotaCard
+        if store.isCodex { quotaCard } else { balanceCard }
+        localUsageCard
         VStack(alignment: .leading, spacing: 10) {
             HStack {
                 sectionTitle("任务动态", detail: "每 2 秒更新")
@@ -78,6 +111,122 @@ struct DashboardView: View {
         }
         Text("统计范围：本机最近 \(store.sessions.count) 个未归档会话")
             .font(.system(size: 10)).foregroundStyle(.secondary)
+    }
+
+    // MARK: - DeepSeek balance
+
+    private var balanceCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Label("DeepSeek 余额", systemImage: "creditcard").font(.system(size: 13, weight: .semibold))
+                Spacer()
+                if let currency = store.balance?.primary?.currency {
+                    Text(currency.uppercased()).font(.system(size: 9, weight: .bold, design: .monospaced))
+                        .foregroundStyle(.orange).padding(.horizontal, 8).padding(.vertical, 4)
+                        .background(.orange.opacity(0.1), in: Capsule())
+                }
+            }
+            if let balance = store.balance {
+                if balance.isAvailable == false { notice("服务端标记该账户当前不可用，请确认账户状态与余额。") }
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text(balance.display).font(.system(size: 34, weight: .semibold, design: .rounded)).monospacedDigit()
+                    Spacer(minLength: 0)
+                    if let spend = store.observedSpend {
+                        VStack(alignment: .trailing, spacing: 2) {
+                            Text(spend >= 0 ? "今日观测消耗" : "今日观测充值")
+                                .font(.system(size: 10)).foregroundStyle(.secondary)
+                            Text(DisplayFormat.money(abs(spend), currency: balance.primary?.currency ?? "CNY", fractionDigits: 4))
+                                .font(.system(size: 13, weight: .medium, design: .rounded)).monospacedDigit()
+                                .foregroundStyle(spend >= 0 ? .primary : pulse)
+                        }
+                    }
+                }
+                HStack(spacing: 18) {
+                    if let granted = balance.primary?.grantedBalance {
+                        Label("赠送 \(DisplayFormat.money(Double(granted), currency: balance.primary?.currency ?? "CNY"))", systemImage: "gift")
+                    }
+                    if let topped = balance.primary?.toppedUpBalance {
+                        Label("充值 \(DisplayFormat.money(Double(topped), currency: balance.primary?.currency ?? "CNY"))", systemImage: "banknote")
+                    }
+                    Spacer(minLength: 0)
+                }.font(.system(size: 11)).foregroundStyle(.secondary)
+                if let note = store.credentialNotice {
+                    Text(note).font(.system(size: 9)).foregroundStyle(.tertiary).lineLimit(1).help(note)
+                }
+                if store.balanceStale || store.balanceError != nil {
+                    notice("上次快照 · " + (store.balanceError ?? "等待重新同步，余额可能已变化。"))
+                }
+            } else {
+                emptyState("等待余额数据", detail: store.balanceError ?? store.connectionMessage, icon: "creditcard")
+            }
+            HStack(spacing: 4) {
+                Circle().fill(store.balanceStale || store.balanceError != nil ? .orange : pulse).frame(width: 4, height: 4)
+                Text("\(DisplayFormat.age(store.balanceUpdated, now: store.now))同步 · 每 30 秒，任务完成后立即刷新")
+            }.font(.system(size: 9)).foregroundStyle(.secondary)
+        }.padding(16).pulseCard(accent: true)
+    }
+
+    // MARK: - Local token usage
+
+    @ViewBuilder private var localUsageCard: some View {
+        if let usage = store.localUsage, usage.hasData {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    Label(store.isDeepSeek ? "Token 用量（本机日志）" : "本机 Token 用量", systemImage: "chart.bar")
+                        .font(.system(size: 13, weight: .semibold))
+                    Spacer()
+                    Text("每 2 秒").font(.system(size: 9)).foregroundStyle(.secondary)
+                }
+                HStack(alignment: .firstTextBaseline) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(DisplayFormat.tokens(usage.today?.totalTokens)).font(.system(size: 26, weight: .semibold, design: .rounded)).monospacedDigit()
+                        Text("今日 Token").font(.system(size: 10)).foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 8)
+                    VStack(alignment: .trailing, spacing: 2) {
+                        Text(DisplayFormat.tokens(usage.totalTokens)).font(.system(size: 15, weight: .medium, design: .rounded)).monospacedDigit()
+                        Text("近 \(usage.windowDays) 天合计").font(.system(size: 10)).foregroundStyle(.secondary)
+                    }
+                }
+                usageBars(usage)
+                if let top = usage.models.first {
+                    HStack(spacing: 14) {
+                        ForEach(Array(usage.models.prefix(3))) { model in
+                            Label("\(model.model) \(DisplayFormat.tokens(model.tokens))", systemImage: "cube")
+                                .lineLimit(1)
+                        }
+                        Spacer(minLength: 0)
+                    }.font(.system(size: 10)).foregroundStyle(.secondary)
+                }
+                if usage.truncatedFiles > 0 || usage.unreadableFiles > 0 {
+                    notice("\(usage.truncatedFiles) 个日志只读取了尾部、\(usage.unreadableFiles) 个不可读，较早轮次可能未计入。")
+                }
+                Text("口径：本机 Codex 日志中每次请求的增量 Token，按事件时间归入本地日期；不含其他设备或网页端的调用。")
+                    .font(.system(size: 9)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }.padding(16).pulseCard()
+        } else if let error = store.localError {
+            VStack(alignment: .leading, spacing: 8) {
+                sectionTitle("本机 Token 用量", detail: "每 2 秒")
+                notice(error)
+            }.padding(16).pulseCard()
+        }
+    }
+
+    private func usageBars(_ usage: UsageSnapshot) -> some View {
+        let peak = max(1, usage.recentDays.map(\.totalTokens).max() ?? 1)
+        return HStack(alignment: .bottom, spacing: 8) {
+            ForEach(usage.recentDays) { day in
+                VStack(spacing: 6) {
+                    Text(DisplayFormat.tokens(day.totalTokens)).font(.system(size: 8)).foregroundStyle(.secondary).lineLimit(1)
+                    RoundedRectangle(cornerRadius: 5)
+                        .fill(day.date == usage.todayKey ? pulse : pulse.opacity(0.3))
+                        .frame(height: max(3, 72 * Double(day.totalTokens) / Double(peak)))
+                    Text(String(day.date.suffix(5))).font(.system(size: 9)).foregroundStyle(.secondary)
+                }.frame(maxWidth: .infinity)
+                    .help("\(day.date)：\(day.totalTokens.formatted()) Token（输入 \(day.inputTokens.formatted()) · 缓存 \(day.cachedInputTokens.formatted()) · 输出 \(day.outputTokens.formatted())）")
+                    .accessibilityLabel("\(day.date)，\(day.totalTokens) Token")
+            }
+        }.frame(height: 108, alignment: .bottom)
     }
 
     private func metric(_ title: String, count: Int, icon: String, color: Color) -> some View {
@@ -182,7 +331,73 @@ struct DashboardView: View {
         return "还有 \(max(1, minutes)) 分钟"
     }
 
+    /// DeepSeek has no public usage endpoint, so the page shows the local log ledger; Codex keeps
+    /// its server-side account usage and gains the same local ledger next to it.
     @ViewBuilder private var usagePage: some View {
+        if store.isDeepSeek {
+            sectionTitle("DeepSeek 用量", detail: "本机日志 · 每 2 秒")
+            localUsageDetail(accent: true)
+            if let error = store.balanceError { notice(error) }
+            Text("DeepSeek 官方接口提供余额，不提供用量查询。用量取本机 Codex 日志里每次请求的增量 Token，按事件时间归入本机时区的日期；网页端或其他设备的调用不在其中。")
+                .font(.system(size: 10)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        } else {
+            serverUsagePage
+            sectionTitle("本机 Token 用量", detail: "每 2 秒 · 增量读取")
+            localUsageDetail(accent: false)
+            Text("服务端统计与本机日志是两种口径：服务端按账号范围统计，本机日志只覆盖这台机器记录的请求。两者不一致时以服务端为准。")
+                .font(.system(size: 10)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    @ViewBuilder private func localUsageDetail(accent: Bool) -> some View {
+        if let usage = store.localUsage, usage.hasData {
+            VStack(alignment: .leading, spacing: 8) {
+                Label("近 \(usage.windowDays) 天 Token", systemImage: "chart.bar.xaxis")
+                    .font(.system(size: 12)).foregroundStyle(.secondary)
+                Text(DisplayFormat.tokens(usage.totalTokens))
+                    .font(.system(size: 36, weight: .semibold, design: .rounded)).monospacedDigit()
+                Text(usage.totalTokens.formatted() + " Token · 读取 \(usage.filesRead) 份日志")
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+            }.frame(maxWidth: .infinity, alignment: .leading).padding(18).pulseCard(accent: accent)
+            HStack(spacing: 12) {
+                usageMetric("今日", value: DisplayFormat.tokens(usage.today?.totalTokens))
+                usageMetric("单日峰值", value: DisplayFormat.tokens(usage.days.map(\.totalTokens).max()))
+            }
+            let inputTokens = usage.days.reduce(Int64(0)) { $0 + $1.inputTokens }
+            let cachedTokens = usage.days.reduce(Int64(0)) { $0 + $1.cachedInputTokens }
+            let outputTokens = usage.days.reduce(Int64(0)) { $0 + $1.outputTokens }
+            HStack(spacing: 12) {
+                usageMetric("输入", value: DisplayFormat.tokens(inputTokens))
+                usageMetric("缓存命中", value: DisplayFormat.tokens(cachedTokens))
+                usageMetric("输出", value: DisplayFormat.tokens(outputTokens))
+            }
+            if !usage.recentDays.isEmpty {
+                VStack(alignment: .leading, spacing: 16) {
+                    sectionTitle("最近使用", detail: "最近 \(usage.recentDays.count) 个有记录的日期")
+                    usageBars(usage)
+                }.padding(16).pulseCard()
+            }
+            if !usage.models.isEmpty {
+                VStack(alignment: .leading, spacing: 10) {
+                    sectionTitle("按模型", detail: "近 \(usage.windowDays) 天")
+                    ForEach(usage.models) { model in
+                        HStack {
+                            Text(model.model).lineLimit(1)
+                            Spacer()
+                            Text(DisplayFormat.tokens(model.tokens) + " Token").monospacedDigit().foregroundStyle(.secondary)
+                        }.font(.system(size: 11))
+                    }
+                }.padding(16).pulseCard()
+            }
+            if usage.truncatedFiles > 0 || usage.unreadableFiles > 0 {
+                notice("\(usage.truncatedFiles) 份日志只读取了尾部、\(usage.unreadableFiles) 份不可读；这些文件里更早的轮次未计入。")
+            }
+        } else {
+            emptyState("等待本机用量数据", detail: store.localError ?? "正在读取本机 Codex 日志…", icon: "chart.bar")
+        }
+    }
+
+    @ViewBuilder private var serverUsagePage: some View {
         sectionTitle("账号使用趋势", detail: "每 5 分钟同步")
         if let usage = store.usage {
             VStack(alignment: .leading, spacing: 8) {
@@ -323,6 +538,22 @@ struct DashboardView: View {
 
     private var settings: some View {
         VStack(alignment: .leading, spacing: 18) {
+            sectionTitle("监测账户", detail: "\(store.accounts.count) 个 · 点按即切换")
+            VStack(spacing: 8) {
+                ForEach(store.accounts) { account in
+                    accountRow(account)
+                }
+            }
+            HStack(spacing: 10) {
+                Button { store.beginAddAccount() } label: { Label("添加账户", systemImage: "plus") }
+                    .buttonStyle(.borderedProminent).disabled(store.isDemo)
+                Button { store.refreshAllAccounts() } label: { Label("刷新全部", systemImage: "arrow.clockwise") }
+                    .disabled(store.isDemo)
+                Spacer(minLength: 0)
+            }.font(.system(size: 11))
+            if store.showAccountEditor { accountEditor }
+            if let status = store.accountStatus { Text(status).font(.system(size: 10)).foregroundStyle(.secondary) }
+            if let error = store.settingsError { notice(error) }
             sectionTitle("外观与显示", detail: nil)
             VStack(alignment: .leading, spacing: 15) {
                 Picker("界面主题", selection: $store.theme) {
@@ -334,32 +565,105 @@ struct DashboardView: View {
             }.padding(16).pulseCard()
             Text("点击面板外部、切换应用或按 Esc 即可收起。刷新快捷键为 ⌘R。")
                 .font(.system(size: 10)).foregroundStyle(.secondary)
-            sectionTitle("数据连接", detail: "无需额外 API Key")
-            VStack(alignment: .leading, spacing: 12) {
-                Text("Codex 数据目录").font(.system(size: 11, weight: .medium))
-                TextField("~/.codex", text: $store.homePath).textFieldStyle(.roundedBorder)
-                Text("Codex CLI 路径").font(.system(size: 11, weight: .medium))
-                HStack {
-                    TextField("自动检测", text: $store.executablePath).textFieldStyle(.roundedBorder)
-                    Button("选择…") { store.chooseCLI() }
-                }
-                Button("保存并重新连接") { store.applySettings() }.buttonStyle(.borderedProminent).disabled(store.isDemo)
-                if let error = store.settingsError { notice(error) }
-            }.padding(16).pulseCard()
+            sectionTitle("刷新节奏", detail: "选中账户在前台按快节奏，后台账户只读余额")
             VStack(alignment: .leading, spacing: 10) {
                 settingsRow("任务日志", "每 2 秒 · 增量读取")
-                settingsRow("账号额度", "每 60 秒 · Codex 接口")
-                settingsRow("Token 统计", "每 5 分钟 · Codex 接口")
+                settingsRow("本机 Token 用量", "每 2 秒 · 增量读取")
+                settingsRow("Codex 额度", "每 60 秒 · app-server")
+                settingsRow("Codex 账号用量", "每 5 分钟 · app-server")
+                settingsRow("DeepSeek 余额", "每 30 秒 · 任务完成后立即刷新")
+                settingsRow("后台 DeepSeek 账户", "每 10 分钟 · 仅余额")
                 settingsRow("本地读取", DisplayFormat.age(store.localUpdated, now: store.now))
             }.padding(16).pulseCard()
-            Text("数据仅在本机展示。Pulse 不发起模型任务、不读取登录凭据，也不消费额度重置次数。")
+            Text("数据仅在本机展示。Pulse 不发起模型任务，也不消费额度重置次数。DeepSeek 余额请求只在该账户的内存里使用你的凭据：优先 macOS 钥匙串中保存的 Key，其次该账户 config.toml 里的 provider bearer token 或 env_key；不读取 auth.json，不写入日志，界面与诊断输出都不包含密钥。")
                 .font(.system(size: 10)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             HStack {
-                Text("Codex Pulse 0.2.1").foregroundStyle(.secondary)
+                Text("Codex Pulse 0.3.0").foregroundStyle(.secondary)
                 Spacer()
                 Link("接口说明 ↗", destination: URL(string: "https://learn.chatgpt.com/docs/app-server")!)
             }.font(.system(size: 10))
         }
+    }
+
+    private func accountRow(_ account: AccountConfig) -> some View {
+        let isSelected = account.id == store.selectedID
+        return VStack(alignment: .leading, spacing: 8) {
+            Button { store.selectAccount(account.id) } label: {
+                HStack(alignment: .top, spacing: 10) {
+                    Image(systemName: account.kind.symbol).font(.system(size: 12))
+                        .foregroundStyle(account.kind == .deepseek ? .orange : pulse)
+                        .frame(width: 26, height: 26)
+                        .background((account.kind == .deepseek ? Color.orange : pulse).opacity(0.09), in: RoundedRectangle(cornerRadius: 8))
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack(spacing: 5) {
+                            Text(account.displayName).font(.system(size: 12, weight: .medium)).lineLimit(1)
+                            Text(account.kind.label).font(.system(size: 8, weight: .bold, design: .monospaced))
+                                .foregroundStyle(account.kind == .deepseek ? .orange : pulse)
+                                .padding(.horizontal, 6).padding(.vertical, 2)
+                                .background((account.kind == .deepseek ? Color.orange : pulse).opacity(0.1), in: Capsule())
+                            if isSelected {
+                                Text("当前").font(.system(size: 8)).foregroundStyle(.secondary)
+                                    .padding(.horizontal, 6).padding(.vertical, 2).background(.primary.opacity(0.07), in: Capsule())
+                            }
+                        }
+                        Text(store.accountSummary(account)).font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(2)
+                        Text(account.expandedHome.path).font(.system(size: 9)).foregroundStyle(.tertiary).lineLimit(1)
+                    }
+                    Spacer(minLength: 0)
+                }.contentShape(Rectangle())
+            }.buttonStyle(.plain)
+            HStack(spacing: 12) {
+                Button(isSelected ? "已选中" : "切换到此账户") { store.selectAccount(account.id) }
+                    .disabled(isSelected)
+                Button("编辑…") { store.beginEditAccount(account) }.disabled(store.isDemo)
+                if account.kind == .deepseek, account.hasStoredKey {
+                    Button("清除本机 Key") { store.clearStoredKey(for: account.id) }.disabled(store.isDemo)
+                }
+                Spacer(minLength: 0)
+                Button("删除") { store.deleteAccount(account.id) }
+                    .disabled(store.isDemo || store.accounts.count <= 1)
+            }.font(.system(size: 10)).buttonStyle(.plain).foregroundStyle(pulse)
+        }.padding(12).pulseCard()
+    }
+
+    private var accountEditor: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            sectionTitle(store.editingID == nil ? "添加账户" : "编辑账户", detail: nil)
+            TextField("显示名称", text: $store.draftName).textFieldStyle(.roundedBorder)
+            Picker("类型", selection: $store.draftKind) {
+                ForEach(AccountKind.allCases, id: \.self) { kind in Text("\(kind.label) · \(kind.detail)").tag(kind) }
+            }.font(.system(size: 11))
+            Text("Codex 登录与 DeepSeek 提供商凭据都放在数据目录里；同一个目录可以按需要分别添加成两种类型。")
+                .font(.system(size: 9)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            Text("Codex 数据目录").font(.system(size: 11, weight: .medium))
+            HStack {
+                TextField("~/.codex", text: $store.draftHome).textFieldStyle(.roundedBorder)
+                Button("选择…") { store.chooseAccountHome() }
+            }
+            Text("Codex CLI 路径").font(.system(size: 11, weight: .medium))
+            HStack {
+                TextField("自动检测", text: $store.draftCLI).textFieldStyle(.roundedBorder)
+                Button("选择…") { store.chooseCLI() }
+            }
+            if store.draftKind == .deepseek {
+                Text("余额接口").font(.system(size: 11, weight: .medium))
+                TextField(ProviderConfig.defaultBaseURL, text: $store.draftBaseURL).textFieldStyle(.roundedBorder)
+                TextField(ProviderConfig.defaultBalancePath, text: $store.draftBalancePath).textFieldStyle(.roundedBorder)
+                Text("API Key（可选）").font(.system(size: 11, weight: .medium))
+                SecureField(store.draftHasStoredKey ? "已保存在钥匙串，留空则继续使用" : "留空则读取 config.toml / 环境变量", text: $store.draftKey)
+                    .textFieldStyle(.roundedBorder)
+                Text("留空时不写入任何内容；填写后保存在 macOS 钥匙串，界面与诊断输出都不会显示它。")
+                    .font(.system(size: 9)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+            if let note = store.draftNote {
+                Text(note).font(.system(size: 9)).foregroundStyle(.secondary).lineLimit(3).fixedSize(horizontal: false, vertical: true)
+            }
+            HStack(spacing: 10) {
+                Button("保存") { store.saveDraftAccount() }.buttonStyle(.borderedProminent).disabled(store.isDemo)
+                Button("取消") { store.cancelAccountEditor() }
+                Spacer(minLength: 0)
+            }.font(.system(size: 11))
+        }.padding(16).pulseCard(accent: true)
     }
 
     private var footer: some View {

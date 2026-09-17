@@ -27,7 +27,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         let args = CommandLine.arguments
         let demo = args.contains("--demo")
-        let diagnosing = args.contains("--diagnose")
+        let diagnosing = args.contains("--diagnose") || args.contains("--usage-check")
+        let usageCheck = args.contains("--usage-check")
         store = MonitorStore(demo: demo)
         if !diagnosing {
             let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -72,19 +73,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in self?.togglePopover() }
         }
         if diagnosing {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 20) { [weak self] in
+            let delay: TimeInterval = usageCheck ? 12 : 20
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
                 guard let self else { return }
-                let summary: [String: Any] = [
-                    "cliFound": RPCClient.locateCLI() != nil,
-                    "connected": self.store.connected,
-                    "quotaAvailable": self.store.quota != nil,
-                    "quotaBucketCount": self.store.quota?.buckets.count ?? 0,
-                    "usageAvailable": self.store.usage != nil,
-                    "localReadOK": self.store.localError == nil && self.store.localUpdated != nil,
-                    "sessionCount": self.store.sessions.count,
-                    "runningCount": self.store.runningCount,
-                    "quietCount": self.store.quietCount
-                ]
+                var summary = self.store.diagnostics(detailed: usageCheck)
+                summary["cliFound"] = RPCClient.locateCLI() != nil
+                summary["mode"] = usageCheck ? "usage-check" : "diagnose"
                 if let data = try? JSONSerialization.data(withJSONObject: summary, options: [.prettyPrinted, .sortedKeys]),
                    let text = String(data: data, encoding: .utf8) { print(text) }
                 NSApp.terminate(nil)
@@ -102,7 +96,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     private func updateStatus() {
         item?.button?.title = store.compactStatus ? "" : " " + store.statusLabel
-        item?.button?.toolTip = "Codex Pulse · \(store.runningCount) 个活跃任务 · 主额度剩余比例"
+        item?.button?.toolTip = store.statusTooltip + " · " + (store.isDeepSeek ? "DeepSeek 余额与用量" : "Codex 额度剩余比例")
     }
     @objc private func togglePopover() {
         guard let button = item?.button else { return }
