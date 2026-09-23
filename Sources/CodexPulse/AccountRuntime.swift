@@ -17,6 +17,7 @@ final class AccountRuntime: ObservableObject, Identifiable {
 
     @Published var sessions: [SessionInfo] = []
     @Published var quota: QuotaResponse?
+    @Published var resetCreditSnapshot: ResetCreditSnapshot?
     @Published var accountUsage: AccountUsage?
     @Published var balance: DeepSeekBalance?
     @Published var usage: UsageSnapshot?
@@ -63,6 +64,7 @@ final class AccountRuntime: ObservableObject, Identifiable {
         self.local = LocalSessions(home: config.expandedHome)
         self.ledger = UsageLedger(home: config.expandedHome, kind: config.kind)
         self.balanceHistory = Self.loadBalanceHistory(id: config.id)
+        if config.kind == .codex { self.resetCreditSnapshot = Self.loadResetCreditSnapshot(id: config.id) }
         self.observedSpend = BalanceHistory.observedSpend(balanceHistory, day: DayKey.format(Date()))
         self.connectionMessage = config.kind == .deepseek ? "正在读取 DeepSeek 余额…" : "正在连接 Codex…"
         rpc.onReady = { [weak self] in
@@ -83,6 +85,7 @@ final class AccountRuntime: ObservableObject, Identifiable {
                 // Never leave another account's balances on screen after a login switch.
                 self.quota = nil; self.accountUsage = nil
                 self.quotaUpdated = nil; self.usageUpdated = nil
+                self.clearResetCreditSnapshot()
                 self.refreshQuota(); self.refreshServerUsage()
             }
         }
@@ -123,6 +126,7 @@ final class AccountRuntime: ObservableObject, Identifiable {
         ledger = UsageLedger(home: config.expandedHome, kind: config.kind)
         localGeneration = UUID(); localBusy = false; ledgerBusy = false
         sessions = []; quota = nil; accountUsage = nil; balance = nil; usage = nil
+        clearResetCreditSnapshot()
         localUpdated = nil; quotaUpdated = nil; usageUpdated = nil; balanceUpdated = nil
         localError = nil; quotaError = nil; usageError = nil; balanceError = nil
     }
@@ -222,7 +226,16 @@ final class AccountRuntime: ObservableObject, Identifiable {
             guard let self else { return }
             self.quotaBusy = false
             switch result.flatMap({ data in Result { try JSONDecoder().decode(QuotaResponse.self, from: data) } }) {
-            case .success(let quota): self.quota = quota; self.quotaUpdated = Date(); self.quotaError = nil
+            case .success(let quota):
+                let recordedAt = Date()
+                self.quota = quota; self.quotaUpdated = recordedAt; self.quotaError = nil
+                if let credits = quota.rateLimitResetCredits {
+                    let snapshot = ResetCreditSnapshot(value: credits, recordedAt: recordedAt, accountId: quota.accountId)
+                    self.resetCreditSnapshot = snapshot
+                    Self.saveResetCreditSnapshot(snapshot, id: self.id)
+                } else {
+                    self.clearResetCreditSnapshot()
+                }
             case .failure: self.quotaError = "额度读取失败；保留上次快照，请在 Codex 中确认登录状态。"
             }
         }
@@ -280,6 +293,23 @@ final class AccountRuntime: ObservableObject, Identifiable {
 
     private static func historyKey(_ id: UUID) -> String { "balanceHistory." + id.uuidString }
 
+    private static func resetCreditKey(_ id: UUID) -> String { "resetCredits." + id.uuidString }
+
+    private static func loadResetCreditSnapshot(id: UUID) -> ResetCreditSnapshot? {
+        guard let data = UserDefaults.standard.data(forKey: resetCreditKey(id)) else { return nil }
+        return try? JSONDecoder().decode(ResetCreditSnapshot.self, from: data)
+    }
+
+    private static func saveResetCreditSnapshot(_ snapshot: ResetCreditSnapshot, id: UUID) {
+        guard let data = try? JSONEncoder().encode(snapshot) else { return }
+        UserDefaults.standard.set(data, forKey: resetCreditKey(id))
+    }
+
+    private func clearResetCreditSnapshot() {
+        resetCreditSnapshot = nil
+        UserDefaults.standard.removeObject(forKey: Self.resetCreditKey(id))
+    }
+
     private static func loadBalanceHistory(id: UUID) -> [String: BalanceSample] {
         guard let data = UserDefaults.standard.data(forKey: historyKey(id)) else { return [:] }
         return (try? JSONDecoder().decode([String: BalanceSample].self, from: data)) ?? [:]
@@ -316,7 +346,12 @@ final class AccountRuntime: ObservableObject, Identifiable {
         switch config.kind {
         case .codex:
             connectionMessage = "演示数据 · Codex app-server"
-            quota = try? JSONDecoder().decode(QuotaResponse.self, from: Data(#"{"rateLimits":{"limitId":"codex","primary":{"usedPercent":28,"windowDurationMins":300,"resetsAt":1893456000},"secondary":{"usedPercent":42,"windowDurationMins":10080,"resetsAt":1893801600},"credits":{"hasCredits":true,"unlimited":false,"balance":"128.50"},"planType":"pro"},"ordinaryUsageAllowed":true,"rateLimitResetCredits":{"availableCount":1}}"#.utf8))
+            let firstExpiry = Int(Date().addingTimeInterval(12 * 86400).timeIntervalSince1970)
+            let secondExpiry = Int(Date().addingTimeInterval(30 * 86400).timeIntervalSince1970)
+            quota = try? JSONDecoder().decode(QuotaResponse.self, from: Data(#"{"rateLimits":{"limitId":"codex","primary":{"usedPercent":28,"windowDurationMins":300,"resetsAt":1893456000},"secondary":{"usedPercent":42,"windowDurationMins":10080,"resetsAt":1893801600},"credits":{"hasCredits":true,"unlimited":false,"balance":"128.50"},"planType":"pro"},"ordinaryUsageAllowed":true,"rateLimitResetCredits":{"availableCount":2,"credits":[{"id":"demo-one","resetType":"codexRateLimits","status":"available","expiresAt":\#(firstExpiry)},{"id":"demo-two","resetType":"codexRateLimits","status":"available","expiresAt":\#(secondExpiry)}]}}"#.utf8))
+            if let credits = quota?.rateLimitResetCredits {
+                resetCreditSnapshot = ResetCreditSnapshot(value: credits, recordedAt: quotaUpdated ?? Date(), accountId: nil)
+            }
             quota?.rateLimits.primary?.resetsAt = Date().addingTimeInterval(7200).timeIntervalSince1970
             quota?.rateLimits.secondary?.resetsAt = Date().addingTimeInterval(3 * 86400).timeIntervalSince1970
             accountUsage = try? JSONDecoder().decode(AccountUsage.self, from: Data(#"{"summary":{"lifetimeTokens":124800000,"peakDailyTokens":12400000,"currentStreakDays":12},"dailyUsageBuckets":[{"startDate":"2026-09-06","tokens":3100000},{"startDate":"2026-09-07","tokens":6500000},{"startDate":"2026-09-08","tokens":4200000},{"startDate":"2026-09-09","tokens":9200000},{"startDate":"2026-09-10","tokens":7800000},{"startDate":"2026-09-11","tokens":12400000},{"startDate":"2026-09-12","tokens":8600000}]}"#.utf8))

@@ -94,6 +94,23 @@ private let base = ISO8601DateFormatter().date(from: "2026-09-12T12:00:00Z")!
     #expect(quota.rateLimits.credits?.display == "未提供")
 }
 
+@Test func resetCreditsKeepServerCountAndIndividualExpirations() throws {
+    let data = Data(#"{"rateLimits":{"limitId":"codex"},"accountId":"account-1","rateLimitResetCredits":{"availableCount":2,"credits":[{"id":"later","resetType":"codexRateLimits","status":"available","expiresAt":1792703117},{"id":"spent","resetType":"codexRateLimits","status":"used","expiresAt":1790111117},{"id":"soon","resetType":"codexRateLimits","status":"available","expiresAt":1791174032},{"id":"other","resetType":"other","status":"available","expiresAt":1790111117}]}}"#.utf8)
+    let quota = try JSONDecoder().decode(QuotaResponse.self, from: data)
+    let resets = try #require(quota.rateLimitResetCredits)
+    #expect(resets.availableCount == 2)
+    #expect(resets.availableDetails.map(\.id) == ["soon", "later"])
+    #expect(resets.availableDetails.map(\.expiresAt) == [1791174032, 1792703117])
+    #expect(resets.availableDetails.first?.expirationDate == Date(timeIntervalSince1970: 1791174032))
+
+    let record = ResetCreditSnapshot(value: resets, recordedAt: Date(timeIntervalSince1970: 1790000000), accountId: quota.accountId)
+    #expect(try JSONDecoder().decode(ResetCreditSnapshot.self, from: JSONEncoder().encode(record)) == record)
+
+    let missingDetails = try JSONDecoder().decode(QuotaResponse.self, from: Data(#"{"rateLimits":{},"rateLimitResetCredits":{"availableCount":1}}"#.utf8))
+    #expect(missingDetails.rateLimitResetCredits?.availableCount == 1)
+    #expect(missingDetails.rateLimitResetCredits?.availableDetails.isEmpty == true)
+}
+
 @Test func usageUsesLatestRecordedDateAndPreservesUnknown() throws {
     let data = Data(#"{"summary":{"lifetimeTokens":null},"dailyUsageBuckets":[{"startDate":"2026-09-10","tokens":12},{"startDate":"2026-09-01","tokens":3}]}"#.utf8)
     let usage = try JSONDecoder().decode(AccountUsage.self, from: data)

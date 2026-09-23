@@ -189,7 +189,7 @@ struct DashboardView: View {
                     }
                 }
                 usageBars(usage)
-                if let top = usage.models.first {
+                if !usage.models.isEmpty {
                     HStack(spacing: 14) {
                         ForEach(Array(usage.models.prefix(3))) { model in
                             Label("\(model.model) \(DisplayFormat.tokens(model.tokens))", systemImage: "cube")
@@ -264,10 +264,13 @@ struct DashboardView: View {
                             .help("Codex 返回的 credits 单位，不等同于美元或剩余 Token。")
                     }
                     Spacer(minLength: 0)
-                    if let count = quota.rateLimitResetCredits?.availableCount {
-                        Text("可重置 \(count) 次")
-                    }
                 }.font(.system(size: 11)).foregroundStyle(.secondary).padding(.top, 3)
+                if let snapshot = store.resetCreditSnapshot {
+                    resetCreditSection(snapshot)
+                } else {
+                    Text("Reset 次数与到期时间：服务端未提供")
+                        .font(.system(size: 10)).foregroundStyle(.secondary)
+                }
                 if quota.buckets.count > 1 {
                     DisclosureGroup("其他模型额度 · \(quota.buckets.count - 1)", isExpanded: $store.showExtraQuotas) {
                         VStack(alignment: .leading, spacing: 14) {
@@ -285,12 +288,55 @@ struct DashboardView: View {
                 }
             } else {
                 emptyState("等待额度数据", detail: store.quotaError ?? store.connectionMessage, icon: "arrow.triangle.2.circlepath")
+                if let snapshot = store.resetCreditSnapshot { resetCreditSection(snapshot) }
             }
             HStack(spacing: 4) {
                 Circle().fill(store.quotaStale || store.quotaError != nil ? .orange : pulse).frame(width: 4, height: 4)
                 Text("\(DisplayFormat.age(store.quotaUpdated, now: store.now))同步 · 每 60 秒更新")
             }.font(.system(size: 9)).foregroundStyle(.secondary)
         }.padding(16).pulseCard(accent: true)
+    }
+
+    private func resetCreditSection(_ snapshot: ResetCreditSnapshot) -> some View {
+        let details = snapshot.value.availableDetails
+        let current = store.resetCreditSnapshotCurrent
+        let missing = max(0, snapshot.value.availableCount - details.count)
+        return VStack(alignment: .leading, spacing: 7) {
+            Divider()
+            HStack {
+                Label("额度 Reset", systemImage: "arrow.counterclockwise.circle")
+                    .font(.system(size: 11, weight: .medium))
+                Spacer()
+                Text(current ? "可用 \(snapshot.value.availableCount) 次" : "上次记录 \(snapshot.value.availableCount) 次")
+                    .font(.system(size: 11, weight: .semibold)).monospacedDigit()
+            }
+            if snapshot.value.availableCount == 0 {
+                Text("暂无可用 Reset").font(.system(size: 10)).foregroundStyle(.secondary)
+            }
+            ForEach(details.indices, id: \.self) { index in
+                let credit = details[index]
+                HStack(alignment: .firstTextBaseline) {
+                    Text("第 \(index + 1) 次")
+                    Spacer(minLength: 6)
+                    if let date = credit.expirationDate {
+                        Text("\(date.formatted(.dateTime.year().month().day().hour().minute())) 到期" +
+                             (date <= store.now ? "（已过期，待同步）" : ""))
+                            .multilineTextAlignment(.trailing)
+                    } else {
+                        Text("服务端未提供到期时间")
+                    }
+                }.font(.system(size: 10)).foregroundStyle(.secondary)
+            }
+            if missing > 0 {
+                Text("另有 \(missing) 次未提供逐张到期时间")
+                    .font(.system(size: 10)).foregroundStyle(.secondary)
+            }
+            if !current {
+                Text("上次读取：\(snapshot.recordedAt.formatted(.dateTime.year().month().day().hour().minute())) · 仅供参考，等待重新同步账户")
+                    .font(.system(size: 9)).foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }.padding(.top, 2)
     }
 
     private func quotaBucket(_ bucket: QuotaBucket) -> some View {
@@ -578,7 +624,7 @@ struct DashboardView: View {
             Text("数据仅在本机展示。Pulse 不发起模型任务，也不消费额度重置次数。DeepSeek 余额请求只在该账户的内存里使用你的凭据：优先 macOS 钥匙串中保存的 Key，其次该账户 config.toml 里的 provider bearer token 或 env_key；不读取 auth.json，不写入日志，界面与诊断输出都不包含密钥。")
                 .font(.system(size: 10)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             HStack {
-                Text("Codex Pulse 0.3.0").foregroundStyle(.secondary)
+                Text("Codex Pulse 0.3.1").foregroundStyle(.secondary)
                 Spacer()
                 Link("接口说明 ↗", destination: URL(string: "https://learn.chatgpt.com/docs/app-server")!)
             }.font(.system(size: 10))

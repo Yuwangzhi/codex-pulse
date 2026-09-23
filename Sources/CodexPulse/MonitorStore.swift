@@ -68,6 +68,7 @@ final class MonitorStore: ObservableObject {
 
     var sessions: [SessionInfo] { selectedRuntime?.sessions ?? [] }
     var quota: QuotaResponse? { selectedRuntime?.quota }
+    var resetCreditSnapshot: ResetCreditSnapshot? { selectedRuntime?.resetCreditSnapshot }
     var usage: AccountUsage? { selectedRuntime?.accountUsage }
     var localUsage: UsageSnapshot? { selectedRuntime?.usage }
     var balance: DeepSeekBalance? { selectedRuntime?.balance }
@@ -101,6 +102,11 @@ final class MonitorStore: ObservableObject {
     func showTasks(_ filter: String) { taskFilter = filter; searchText = ""; selectedTab = 1 }
 
     var quotaStale: Bool { quotaUpdated.map { now.timeIntervalSince($0) > 120 } ?? true }
+    var resetCreditSnapshotCurrent: Bool {
+        guard let snapshot = resetCreditSnapshot, let quotaUpdated else { return false }
+        let listedCreditExpired = snapshot.value.availableDetails.contains { $0.expirationDate.map { $0 <= now } ?? false }
+        return snapshot.recordedAt == quotaUpdated && !quotaStale && quotaError == nil && connected && !listedCreditExpired
+    }
     var balanceStale: Bool { balanceUpdated.map { now.timeIntervalSince($0) > 180 } ?? true }
 
     /// Menu bar text: active tasks plus the selected account's primary number.
@@ -146,16 +152,16 @@ final class MonitorStore: ObservableObject {
             if stored == nil || AccountRegistry.decode(stored).isEmpty {
                 AccountRegistry.save(accounts, selected: selectedID)
             }
-            Self.pruneOrphanBalanceHistory(accounts)
+            Self.pruneOrphanAccountHistory(accounts)
         }
     }
 
     /// Balance samples belong to an account identifier. Deleting an account, or a build that
     /// generated a fresh identifier, would otherwise leave unreadable entries behind forever.
-    private static func pruneOrphanBalanceHistory(_ accounts: [AccountConfig]) {
-        let valid = Set(accounts.map { "balanceHistory." + $0.id.uuidString })
+    private static func pruneOrphanAccountHistory(_ accounts: [AccountConfig]) {
+        let valid = Set(accounts.flatMap { ["balanceHistory." + $0.id.uuidString, "resetCredits." + $0.id.uuidString] })
         for key in UserDefaults.standard.dictionaryRepresentation().keys
-        where key.hasPrefix("balanceHistory.") && !valid.contains(key) {
+        where (key.hasPrefix("balanceHistory.") || key.hasPrefix("resetCredits.")) && !valid.contains(key) {
             UserDefaults.standard.removeObject(forKey: key)
         }
     }
@@ -360,6 +366,7 @@ final class MonitorStore: ObservableObject {
         subscriptions[id] = nil
         KeychainStore.setKey(nil, for: id)
         UserDefaults.standard.removeObject(forKey: "balanceHistory." + id.uuidString)
+        UserDefaults.standard.removeObject(forKey: "resetCredits." + id.uuidString)
         accounts.remove(at: index)
         if selectedID == id {
             selectedID = accounts.first?.id
@@ -442,6 +449,11 @@ final class MonitorStore: ObservableObject {
             item["localReadOK"] = runtime.localUpdated != nil
             item["quotaAvailable"] = runtime.quota != nil
             item["quotaBuckets"] = runtime.quota?.buckets.count ?? 0
+            if let snapshot = runtime.resetCreditSnapshot {
+                item["resetAvailableCountAtLastRead"] = snapshot.value.availableCount
+                item["resetRecordedAt"] = snapshot.recordedAt.timeIntervalSince1970
+                item["resetExpiresAt"] = snapshot.value.availableDetails.compactMap(\.expiresAt)
+            }
             if let quota = runtime.quota, detailed {
                 item["quotaPercent"] = quota.buckets.compactMap { $0.primary?.remaining }
             }

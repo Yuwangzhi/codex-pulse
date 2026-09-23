@@ -38,12 +38,48 @@ public struct QuotaBucket: Codable, Identifiable, Equatable {
     public var name: String { limitName ?? (id == "codex" ? "Codex" : id) }
 }
 
+public struct ResetCredit: Codable, Equatable {
+    public var id: String?
+    public var resetType: String?
+    public var status: String?
+    public var expiresAt: Double?
+
+    public var expirationDate: Date? {
+        guard let expiresAt, expiresAt.isFinite, expiresAt > 0 else { return nil }
+        return Date(timeIntervalSince1970: expiresAt)
+    }
+}
+
+public struct ResetCredits: Codable, Equatable {
+    public var availableCount: Int
+    public var credits: [ResetCredit]?
+
+    /// The server's count is authoritative; this list supplies expiration details only.
+    public var availableDetails: [ResetCredit] {
+        (credits ?? []).filter { credit in
+            credit.status?.lowercased() == "available" &&
+                (credit.resetType == nil || credit.resetType == "codexRateLimits")
+        }.sorted { ($0.expiresAt ?? .infinity) < ($1.expiresAt ?? .infinity) }
+    }
+}
+
+/// Last successful reset-credit reading, kept locally so its dates remain visible offline.
+public struct ResetCreditSnapshot: Codable, Equatable {
+    public var value: ResetCredits
+    public var recordedAt: Date
+    public var accountId: String?
+
+    public init(value: ResetCredits, recordedAt: Date, accountId: String?) {
+        self.value = value; self.recordedAt = recordedAt; self.accountId = accountId
+    }
+}
+
 public struct QuotaResponse: Codable {
-    public struct ResetCredits: Codable { public var availableCount: Int }
     public var rateLimits: QuotaBucket
     public var rateLimitsByLimitId: [String: QuotaBucket]?
     public var ordinaryUsageAllowed: Bool?
     public var rateLimitResetCredits: ResetCredits?
+    public var accountId: String?
     public var buckets: [QuotaBucket] {
         var all = rateLimitsByLimitId ?? [:]
         all[rateLimits.id] = rateLimits
