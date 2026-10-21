@@ -11,18 +11,21 @@ struct DashboardView: View {
         VStack(spacing: 0) {
             header.padding(.horizontal, 20).padding(.top, 18).padding(.bottom, 16)
             Picker("页面", selection: $store.selectedTab) {
-                Text("概览").tag(0); Text("任务").tag(1); Text("用量").tag(2); Text("设置").tag(3)
+                Text("概览").tag(0); Text("任务").tag(1); Text("用量").tag(2); Text("中转 / CC").tag(4); Text("设置").tag(3)
             }.pickerStyle(.segmented).labelsHidden().padding(.horizontal, 20).padding(.bottom, 16)
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     switch store.selectedTab {
                     case 0: overview
-                    case 1: taskList
+                    case 1:
+                        AgentSessionsSection(store: store)
+                        taskList
                     case 2: usagePage
+                    case 4: RelayDetailView(monitor: store.relay)
                     default: settings
                     }
                 }.padding(.horizontal, 20).padding(.bottom, 20).frame(maxWidth: .infinity, alignment: .leading)
-            }.id(store.selectedTab)
+            }.defaultScrollAnchor(.top).id(store.selectedTab)
             footer
         }
         .frame(width: 460, height: 690)
@@ -37,7 +40,7 @@ struct DashboardView: View {
                 .frame(width: 44, height: 44)
                 .background(LinearGradient(colors: [pulse.opacity(0.19), pulse.opacity(0.05)], startPoint: .topLeading, endPoint: .bottomTrailing), in: RoundedRectangle(cornerRadius: 14))
             VStack(alignment: .leading, spacing: 5) {
-                Text("Codex Pulse").font(.system(size: 19, weight: .semibold, design: .rounded))
+                Text("AI Pulse").font(.system(size: 19, weight: .semibold, design: .rounded))
                 HStack(spacing: 5) {
                     Circle().fill(store.connected ? pulse : .orange).frame(width: 5, height: 5)
                     Text(store.isDemo ? "演示数据 · 本地合成" : (store.connected ? store.headerStatusText : store.connectionMessage))
@@ -86,11 +89,14 @@ struct DashboardView: View {
     }
 
     @ViewBuilder private var overview: some View {
+        QuotaOverviewView(store: store)
         HStack(spacing: 10) {
             metric("执行中", count: store.runningCount, icon: "bolt.fill", color: pulse)
             metric("待确认", count: store.quietCount, icon: "clock", color: .orange)
             metric("已完成", count: store.completedCount, icon: "checkmark.circle", color: .secondary)
         }
+        RelaySummaryView(monitor: store.relay) { store.selectedTab = 4 }
+        AgentSessionsSection(store: store, compact: true)
         if store.isCodex { quotaCard } else { balanceCard }
         localUsageCard
         VStack(alignment: .leading, spacing: 10) {
@@ -600,18 +606,24 @@ struct DashboardView: View {
             if store.showAccountEditor { accountEditor }
             if let status = store.accountStatus { Text(status).font(.system(size: 10)).foregroundStyle(.secondary) }
             if let error = store.settingsError { notice(error) }
+            AgentMonitoringSettings(store: store)
+            Toggle("自动查询中转额度（4Router / ZZS）", isOn: Binding(get: { store.relay.balanceEnabled }, set: { store.relay.balanceEnabled = $0 }))
+                .font(.system(size: 12)).disabled(store.isDemo)
+            Text("Claude Code 请求记录每 6 秒只读 CC Switch 数据库；额度每 60 秒查询。始终与 Codex 同时监测，不受账户切换影响。只查询已核验的中转接口，凭据仅用于该站 HTTPS 查询，不保存或显示。")
+                .font(.system(size: 10)).foregroundStyle(.secondary)
             sectionTitle("外观与显示", detail: nil)
             VStack(alignment: .leading, spacing: 15) {
                 Picker("界面主题", selection: $store.theme) {
                     ForEach(["跟随系统", "浅色", "深色"], id: \.self) { Text($0) }
                 }.font(.system(size: 12))
-                Toggle("状态栏仅显示图标", isOn: $store.compactStatus).font(.system(size: 12))
+                Text("状态栏仅显示 gpt、grok 的剩余百分比数字，无图标。悬停或点击查看来源与缓存时间；— 表示来源未提供。")
+                    .font(.system(size: 10)).foregroundStyle(.secondary)
                 Toggle("登录时启动", isOn: Binding(get: { store.loginEnabled }, set: { store.toggleLogin($0) }))
                     .font(.system(size: 12)).disabled(store.isDemo)
             }.padding(16).pulseCard()
             Text("点击面板外部、切换应用或按 Esc 即可收起。刷新快捷键为 ⌘R。")
                 .font(.system(size: 10)).foregroundStyle(.secondary)
-            sectionTitle("刷新节奏", detail: "选中账户在前台按快节奏，后台账户只读余额")
+            sectionTitle("刷新节奏", detail: "三家额度独立更新，GPT 不随详情账户切换停用")
             VStack(alignment: .leading, spacing: 10) {
                 settingsRow("任务日志", "每 2 秒 · 增量读取")
                 settingsRow("本机 Token 用量", "每 2 秒 · 增量读取")
@@ -624,7 +636,7 @@ struct DashboardView: View {
             Text("数据仅在本机展示。Pulse 不发起模型任务，也不消费额度重置次数。DeepSeek 余额请求只在该账户的内存里使用你的凭据：优先 macOS 钥匙串中保存的 Key，其次该账户 config.toml 里的 provider bearer token 或 env_key；不读取 auth.json，不写入日志，界面与诊断输出都不包含密钥。")
                 .font(.system(size: 10)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             HStack {
-                Text("Codex Pulse 0.3.1").foregroundStyle(.secondary)
+                Text("AI Pulse 0.5.2").foregroundStyle(.secondary)
                 Spacer()
                 Link("接口说明 ↗", destination: URL(string: "https://learn.chatgpt.com/docs/app-server")!)
             }.font(.system(size: 10))
@@ -723,7 +735,7 @@ struct DashboardView: View {
             Button("打开 Codex ↗") { openCodex() }
             Spacer()
             Text("Esc 收起").font(.system(size: 9)).foregroundStyle(.tertiary)
-            Button { NSApp.terminate(nil) } label: { Image(systemName: "power") }.help("退出 Codex Pulse")
+            Button { NSApp.terminate(nil) } label: { Image(systemName: "power") }.help("退出 AI Pulse")
         }.buttonStyle(.plain).font(.system(size: 11)).foregroundStyle(.secondary)
             .padding(.horizontal, 20).padding(.vertical, 13)
             .background(.primary.opacity(0.025)).overlay(alignment: .top) { Divider() }

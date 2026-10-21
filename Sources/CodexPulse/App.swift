@@ -6,6 +6,7 @@ import CodexPulseCore
 @main
 struct CodexPulseMain {
     @MainActor static func main() {
+        if AgentHookCommand.handle(CommandLine.arguments) { return }
         let app = NSApplication.shared
         let delegate = AppDelegate()
         app.delegate = delegate
@@ -21,6 +22,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var store: MonitorStore!
     private var cancellable: AnyCancellable?
     private var preview: NSWindow?
+    private var floating: FloatingSessionsController?
     private var outsideMonitor: Any?
     private var localMonitor: Any?
 
@@ -30,15 +32,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         let diagnosing = args.contains("--diagnose") || args.contains("--usage-check")
         let usageCheck = args.contains("--usage-check")
         store = MonitorStore(demo: demo)
+        if demo && args.contains("--dark") { store.theme = "深色" }
         if !diagnosing {
+            floating = FloatingSessionsController(store: store)
             let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
             self.item = item
             if let button = item.button {
-                button.image = NSImage(systemSymbolName: "waveform.path.ecg", accessibilityDescription: "Codex Pulse")
-                button.imagePosition = .imageLeading
+                button.image = nil
+                button.imagePosition = .noImage
                 button.font = .monospacedDigitSystemFont(ofSize: 11, weight: .medium)
                 button.target = self; button.action = #selector(togglePopover)
-                button.setAccessibilityLabel("Codex Pulse，点击查看任务与额度")
+                button.setAccessibilityLabel("AI Pulse，点击展开额度详情")
             }
             popover.contentSize = NSSize(width: 460, height: 690)
             popover.behavior = .transient
@@ -50,14 +54,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             updateStatus()
         }
         store.dismissPanel = { [weak self] in self?.closePopover() }
+        store.revealDashboard = { [weak self] in
+            self?.showPopover()
+        }
         store.start()
+        floating?.update()
+        if let index = args.firstIndex(of: "--status-screenshot"), args.count > index + 1 {
+            let path = args[index + 1]
+            DispatchQueue.main.asyncAfter(deadline: .now() + (demo ? 2 : 20)) { [weak self] in
+                self?.captureStatus(path: path)
+            }
+        }
+        if let index = args.firstIndex(of: "--floating-screenshot"), args.count > index + 1 {
+            store.floatingEnabled = true
+            floating?.update()
+            let path = args[index + 1]
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+                _ = self?.floating?.capture(path: path)
+                NSApp.terminate(nil)
+            }
+        }
         if let index = args.firstIndex(of: "--tab"), args.count > index + 1, let tab = Int(args[index + 1]) {
-            store.selectedTab = min(3, max(0, tab))
+            store.selectedTab = min(4, max(0, tab))
         }
         if args.contains("--preview") || args.contains("--screenshot") {
             let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 460, height: 690),
                                   styleMask: [.titled, .closable], backing: .buffered, defer: false)
-            window.title = demo ? "Codex Pulse · 演示" : "Codex Pulse"
+            window.title = demo ? "AI Pulse · 演示" : "AI Pulse"
             window.contentView = NSHostingView(rootView: DashboardView(store: store))
             if args.contains("--dark") { window.appearance = NSAppearance(named: .darkAqua) }
             window.center(); window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
@@ -93,20 +116,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         if let data = rep.representation(using: .png, properties: [:]) { try? data.write(to: URL(fileURLWithPath: path)) }
         NSApp.terminate(nil)
     }
+    private func captureStatus(path: String) {
+        guard let button = item?.button,
+              let rep = button.bitmapImageRepForCachingDisplay(in: button.bounds) else { NSApp.terminate(nil); return }
+        button.cacheDisplay(in: button.bounds, to: rep)
+        if let data = rep.representation(using: .png, properties: [:]) { try? data.write(to: URL(fileURLWithPath: path)) }
+        NSApp.terminate(nil)
+    }
 
     private func updateStatus() {
-        item?.button?.title = store.compactStatus ? "" : " " + store.statusLabel
-        item?.button?.toolTip = store.statusTooltip + " · " + (store.isDeepSeek ? "DeepSeek 余额与用量" : "Codex 额度剩余比例")
+        item?.button?.title = store.statusLabel
+        item?.button?.toolTip = store.statusTooltip
+        item?.button?.setAccessibilityLabel("AI Pulse，\(store.statusLabel)，点击展开额度详情")
+        floating?.update()
     }
     @objc private func togglePopover() {
-        guard let button = item?.button else { return }
         if popover.isShown { closePopover() }
         else {
-            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-            NSApp.activate(ignoringOtherApps: true)
-            popover.contentViewController?.view.window?.makeKey()
-            installDismissMonitors()
+            store.selectedTab = 0
+            showPopover()
         }
+    }
+    private func showPopover() {
+        guard !popover.isShown, let button = item?.button else { return }
+        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        NSApp.activate(ignoringOtherApps: true)
+        popover.contentViewController?.view.window?.makeKey()
+        installDismissMonitors()
     }
 
     private func installDismissMonitors() {
@@ -154,5 +190,5 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         return false
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
-    func applicationWillTerminate(_ notification: Notification) { removeDismissMonitors(); store?.stop() }
+    func applicationWillTerminate(_ notification: Notification) { removeDismissMonitors(); floating?.close(); store?.stop() }
 }

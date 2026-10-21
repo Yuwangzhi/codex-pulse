@@ -10,7 +10,7 @@ import Foundation
 /// starts an app-server process, because that endpoint requires a Codex login it does not have.
 @MainActor
 final class AccountRuntime: ObservableObject, Identifiable {
-    enum Role { case selected, background }
+    enum Role { case selected, quotaOnly, background }
 
     let id: UUID
     private(set) var config: AccountConfig
@@ -93,7 +93,11 @@ final class AccountRuntime: ObservableObject, Identifiable {
 
     // MARK: - Lifecycle
 
-    func startLive() {
+    func startLive(includeLocal: Bool = true) {
+        if isLive {
+            if includeLocal { refreshLocal(); refreshLedger() }
+            return
+        }
         isLive = true
         tickCount = 0
         if config.kind == .codex {
@@ -103,8 +107,7 @@ final class AccountRuntime: ObservableObject, Identifiable {
             connectionMessage = "DeepSeek · 余额接口"
             refreshBalance(force: true)
         }
-        refreshLocal()
-        refreshLedger()
+        if includeLocal { refreshLocal(); refreshLedger() }
     }
 
     func stopLive() {
@@ -144,9 +147,9 @@ final class AccountRuntime: ObservableObject, Identifiable {
         }
         switch config.kind {
         case .codex:
-            guard selected else { return }
+            guard selected || role == .quotaOnly else { return }
             if tickCount % Self.quotaRefreshTicks == 0 { refreshQuota() }
-            if tickCount % Self.serverUsageRefreshTicks == 0 { refreshServerUsage() }
+            if selected && tickCount % Self.serverUsageRefreshTicks == 0 { refreshServerUsage() }
             if !connected, tickCount % 20 == 0 { rpc.start(home: config.expandedHome, cliPath: config.cliPath) }
         case .deepseek:
             let interval = selected ? Self.balanceRefreshTicks : Self.backgroundBalanceTicks
@@ -159,7 +162,7 @@ final class AccountRuntime: ObservableObject, Identifiable {
         if role == .selected { refreshLocal(); refreshLedger() }
         switch config.kind {
         case .codex:
-            if role == .selected {
+            if role == .selected || role == .quotaOnly {
                 if !connected { rpc.start(home: config.expandedHome, cliPath: config.cliPath) }
                 else { refreshQuota(); refreshServerUsage() }
             }

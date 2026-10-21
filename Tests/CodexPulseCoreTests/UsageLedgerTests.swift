@@ -53,7 +53,8 @@ private func cumulativeOnly(_ total: Int, at timestamp: String) -> String {
     #"{"type":"event_msg","timestamp":"\#(timestamp)","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":\#(total)}}}}"#
 }
 
-private let now = Date()
+// Pin the clock to the synthetic logs so the 30-day window does not expire over time.
+private let now = ISO8601DateFormatter().date(from: "2026-09-17T12:00:00Z")!
 private let recent = Int(now.timeIntervalSince1970)
 
 @Test func usageIsBucketedByEventDayAndModelWithDeltaSemantics() async throws {
@@ -68,7 +69,7 @@ private let recent = Int(now.timeIntervalSince1970)
     ], to: fixture.files[0])
 
     let ledger = UsageLedger(home: fixture.home, kind: .deepseek)
-    let snapshot = try await ledger.snapshot()
+    let snapshot = try await ledger.snapshot(now: now)
     let dayOne = DayKey.day(fromTimestamp: "2026-09-10T00:00:01Z")!
     let dayTwo = DayKey.day(fromTimestamp: "2026-09-12T00:00:02Z")!
     #expect(snapshot.days.map(\.date) == [dayOne, dayTwo].sorted())
@@ -93,10 +94,10 @@ private let recent = Int(now.timeIntervalSince1970)
     try write([tokenCount(input: 10, cached: 0, output: 5, total: 15, at: "2026-09-16T00:00:01Z")], to: fixture.files[0])
     try write([tokenCount(input: 1000, cached: 0, output: 500, total: 1500, at: "2026-09-16T00:00:01Z")], to: fixture.files[1])
 
-    let deepSeek = try await UsageLedger(home: fixture.home, kind: .deepseek).snapshot()
+    let deepSeek = try await UsageLedger(home: fixture.home, kind: .deepseek).snapshot(now: now)
     #expect(deepSeek.totalTokens == 15)
     #expect(deepSeek.filesRead == 1)
-    let codex = try await UsageLedger(home: fixture.home, kind: .codex).snapshot()
+    let codex = try await UsageLedger(home: fixture.home, kind: .codex).snapshot(now: now)
     #expect(codex.totalTokens == 1500)
     #expect(codex.models.map(\.model) == ["gpt-5.6-sol"])
 }
@@ -108,11 +109,11 @@ private let recent = Int(now.timeIntervalSince1970)
     try write([tokenCount(input: 10, cached: 0, output: 5, total: 15, at: "2026-09-16T00:00:01Z")], to: file)
 
     let ledger = UsageLedger(home: fixture.home, kind: .deepseek)
-    #expect(try await ledger.snapshot().totalTokens == 15)
+    #expect(try await ledger.snapshot(now: now).totalTokens == 15)
     try append([tokenCount(input: 20, cached: 0, output: 10, total: 30, at: "2026-09-16T00:00:09Z")], to: file)
-    #expect(try await ledger.snapshot().totalTokens == 45)
+    #expect(try await ledger.snapshot(now: now).totalTokens == 45)
     // Re-reading without changes stays stable rather than double counting.
-    #expect(try await ledger.snapshot().totalTokens == 45)
+    #expect(try await ledger.snapshot(now: now).totalTokens == 45)
 }
 
 @Test func turnLevelModelDecidesAttributionInsideAMixedThread() async throws {
@@ -128,7 +129,7 @@ private let recent = Int(now.timeIntervalSince1970)
         turnContext("deepseek-v4-pro", at: "2026-09-10T00:20:00Z"),
         tokenCount(input: 50, cached: 0, output: 0, total: 50, at: "2026-09-10T00:20:01Z")
     ], to: fixture.files[0])
-    let snapshot = try await UsageLedger(home: fixture.home, kind: .deepseek).snapshot()
+    let snapshot = try await UsageLedger(home: fixture.home, kind: .deepseek).snapshot(now: now)
     #expect(snapshot.totalTokens == 150)
     #expect(snapshot.models.map(\.model).sorted() == ["deepseek-flash", "deepseek-v4-pro"])
 }
@@ -146,9 +147,9 @@ private let recent = Int(now.timeIntervalSince1970)
     try handle.close()
 
     let ledger = UsageLedger(home: fixture.home, kind: .deepseek)
-    #expect(try await ledger.snapshot().totalTokens == 15)
+    #expect(try await ledger.snapshot(now: now).totalTokens == 15)
     try append([String(extra.suffix(6))], to: file)
-    #expect(try await ledger.snapshot().totalTokens == 45)
+    #expect(try await ledger.snapshot(now: now).totalTokens == 45)
 }
 
 @Test func largeFilesKeepTheTailAndReportTruncation() async throws {
@@ -165,7 +166,7 @@ private let recent = Int(now.timeIntervalSince1970)
 
     var options = UsageLedger.Options()
     options.maxInitialBytes = 1024
-    let snapshot = try await UsageLedger(home: fixture.home, kind: .deepseek, options: options).snapshot()
+    let snapshot = try await UsageLedger(home: fixture.home, kind: .deepseek, options: options).snapshot(now: now)
     #expect(snapshot.totalTokens == 15)
     #expect(snapshot.truncatedFiles == 1)
 }
@@ -178,7 +179,7 @@ private let recent = Int(now.timeIntervalSince1970)
         cumulativeOnly(160, at: "2026-09-16T00:00:02Z"),
         cumulativeOnly(160, at: "2026-09-16T00:00:03Z")
     ], to: fixture.files[0])
-    let snapshot = try await UsageLedger(home: fixture.home, kind: .deepseek).snapshot()
+    let snapshot = try await UsageLedger(home: fixture.home, kind: .deepseek).snapshot(now: now)
     #expect(snapshot.totalTokens == 160)
     #expect(snapshot.days.count == 1)
 }
@@ -188,7 +189,7 @@ private let recent = Int(now.timeIntervalSince1970)
     let fixture = try Fixture(threads: [("t1", "deepseek", "deepseek-flash", "old.jsonl", old)])
     defer { fixture.remove() }
     try write([tokenCount(input: 10, cached: 0, output: 5, total: 15, at: "2026-09-16T00:00:01Z")], to: fixture.files[0])
-    let snapshot = try await UsageLedger(home: fixture.home, kind: .deepseek).snapshot()
+    let snapshot = try await UsageLedger(home: fixture.home, kind: .deepseek).snapshot(now: now)
     #expect(snapshot.filesRead == 0)
     #expect(snapshot.totalTokens == 0)
 }

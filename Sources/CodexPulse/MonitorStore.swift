@@ -7,9 +7,10 @@ import SwiftUI
 /// Coordinates the monitored accounts and exposes the selected account's state to the UI.
 ///
 /// Each account keeps its own `AccountRuntime` (its own connection, logs and snapshots). Only the
-/// selected account is polled at full cadence and may hold an app-server process. DeepSeek
+/// selected account is polled at full cadence. The GPT quota account keeps a lightweight
+/// app-server connection even while another account is selected. DeepSeek
 /// balances of background accounts are still refreshed on a slow timer because that is one cheap
-/// HTTPS request; background Codex accounts keep their cached snapshot until you switch to them.
+/// HTTPS request; other background Codex accounts retain their cached snapshot.
 @MainActor
 final class MonitorStore: ObservableObject {
     // MARK: - Panel state
@@ -26,8 +27,12 @@ final class MonitorStore: ObservableObject {
     @Published var compactStatus = UserDefaults.standard.bool(forKey: "compactStatus") {
         didSet { if !isDemo { UserDefaults.standard.set(compactStatus, forKey: "compactStatus") } }
     }
+    @Published var floatingEnabled = UserDefaults.standard.object(forKey: "floatingEnabled") as? Bool ?? false {
+        didSet { if !isDemo { UserDefaults.standard.set(floatingEnabled, forKey: "floatingEnabled") } }
+    }
     var isPresentingDialog = false
     var dismissPanel: (() -> Void)?
+    var revealDashboard: (() -> Void)?
     @Published var projectDirectories = UserDefaults.standard.dictionary(forKey: "projectDirectories") as? [String: String] ?? [:]
     @Published var openingProject = false
     var projectOpenRequest: UUID?
@@ -54,6 +59,8 @@ final class MonitorStore: ObservableObject {
     @Published var draftNote: String?
     @Published var accountStatus: String?
 
+    let relay: RelayMonitor
+    let agents: AgentMonitor
     let isDemo: Bool
 
     // MARK: - Live state
@@ -61,6 +68,8 @@ final class MonitorStore: ObservableObject {
     private var runtimes: [UUID: AccountRuntime] = [:]
     private var subscriptions: [UUID: AnyCancellable] = [:]
     private var timer: Timer?
+    private var relaySubscription: AnyCancellable?
+    private var agentSubscription: AnyCancellable?
     private var stopping = false
 
     var selectedRuntime: AccountRuntime? { selectedID.flatMap { runtimes[$0] } }
@@ -88,6 +97,48 @@ final class MonitorStore: ObservableObject {
     var isCodex: Bool { (selectedAccount?.kind ?? .codex) == .codex }
 
     var runningCount: Int { sessions.filter { $0.state == .running }.count }
+    var trafficSessions: [TrafficSession] {
+        // A directory may be registered for more than one provider; deduplicate by session ID.
+        var codex: [String: SessionInfo] = [:]
+        let sources = isDemo ? (selectedRuntime.map { [$0] } ?? []) : Array(runtimes.values)
+        for runtime in sources {
+            for session in runtime.sessions {
+                let updated = session.lastEventAt ?? session.updatedAt
+                if let old = codex[session.id], (old.lastEventAt ?? old.updatedAt) >= updated { continue }
+                codex[session.id] = session
+            }
+        }
+        let rows = codex.values.compactMap { session -> TrafficSession? in
+            let updated = session.lastEventAt ?? session.updatedAt
+            guard now.timeIntervalSince(updated) < 3600 else { return nil }
+            let phase: AgentPhase
+            switch session.state {
+            case .running: phase = now.timeIntervalSince(updated) > 120 ? .unknown : .running
+            case .quiet, .unknown: phase = .unknown
+            case .completed: phase = .completed
+            case .interrupted: phase = .interrupted
+            }
+            return TrafficSession(id: "codex:" + session.id, agent: "Codex", project: session.project,
+                                  cwd: session.cwd, phase: phase, detail: session.activity, updatedAt: updated)
+        }
+        var desktop: [TrafficSession] = []
+        if agents.grokBotRunning {
+            desktop = [TrafficSession(id: "grokbot:desktop", agent: "Grok Bot", project: "桌面客户端", cwd: "",
+                                       phase: .unknown, detail: "客户端在线 · 任务状态未提供", updatedAt: now)]
+        }
+        return TrafficSession.sorted(rows + agents.traffic(now: now) + desktop)
+    }
+    func revealTrafficSession(_ session: TrafficSession? = nil) {
+        selectedTab = 1
+        if let session, session.agent == "Codex" {
+            let id = String(session.id.dropFirst("codex:".count))
+            if let account = accounts.first(where: { runtimes[$0.id]?.sessions.contains { $0.id == id } == true }) {
+                selectAccount(account.id)
+            }
+            taskFilter = "全部"; searchText = ""; expandedSessionID = id
+        }
+        revealDashboard?()
+    }
     var quietCount: Int { sessions.filter { $0.state == .quiet }.count }
     var completedCount: Int { sessions.filter { $0.state == .completed }.count }
     var colorScheme: ColorScheme? { theme == "深色" ? .dark : (theme == "浅色" ? .light : nil) }
@@ -109,23 +160,36 @@ final class MonitorStore: ObservableObject {
     }
     var balanceStale: Bool { balanceUpdated.map { now.timeIntervalSince($0) > 180 } ?? true }
 
-    /// Menu bar text: active tasks plus the selected account's primary number.
-    var statusLabel: String {
-        let active = localError == nil ? "\(runningCount)" : "?"
-        switch selectedAccount?.kind ?? .codex {
-        case .codex:
-            guard let remaining = quota?.rateLimits.primary?.remaining, !quotaStale, quotaError == nil, connected else {
-                return "\(active) · —"
-            }
-            return "\(active) · \(Int(remaining))%"
-        case .deepseek:
-            guard let amount = balance?.amount, !balanceStale, balanceError == nil else { return "\(active) · —" }
-            return "\(active) · \(DisplayFormat.money(amount, currency: balance?.primary?.currency ?? "CNY"))"
-        }
+    var menuGPTAccount: AccountConfig? {
+        if let selectedAccount, selectedAccount.kind == .codex { return selectedAccount }
+        return accounts.first { $0.kind == .codex }
     }
-
+    var quotaMenu: [QuotaMenuValue] {
+        let gpt = menuGPTAccount.flatMap { runtimes[$0.id] }
+        let currentProviders = (relay.snapshot?.providers ?? []).filter(\.current)
+        let provider = currentProviders.count == 1 ? currentProviders.first : nil
+        let state = provider.flatMap { relay.balances[$0.id] }
+        return [
+            .gpt(bucket: gpt?.quota?.rateLimits, updatedAt: gpt?.quotaUpdated,
+                 connected: gpt?.connected ?? false, hasError: gpt?.quotaError != nil,
+                 accountName: menuGPTAccount?.displayName ?? "Codex 账户", now: now),
+            .grok(snapshot: agents.grokBot, now: now),
+            .claude(provider: provider, quota: state?.quota, unitsPerDollar: state?.unitsPerDollar,
+                    currency: state?.currency, exchangeRate: state?.exchangeRate ?? 1, updatedAt: state?.updated,
+                    hasError: relay.error != nil || state?.error != nil, now: now)
+        ]
+    }
+    private var statusBarQuotas: [QuotaMenuValue] {
+        quotaMenu.filter { $0.id == "gpt" || $0.id == "grok" }
+    }
+    var statusLabel: String {
+        statusBarQuotas.map { "\($0.id) \($0.value.replacingOccurrences(of: "%", with: ""))" }
+            .joined(separator: "；")
+    }
     var statusTooltip: String {
-        "Codex Pulse · \(selectedAccount?.displayName ?? "未选择账户") · \(runningCount) 个活跃任务"
+        statusBarQuotas.map { item in
+            item.menuText + "：" + item.detail + (item.updatedAt.map { " · \(DisplayFormat.age($0, now: now))读取" } ?? "")
+        }.joined(separator: "\n") + "\n* 表示上次记录或旧缓存；点击展开详情。"
     }
 
     var headerStatusText: String {
@@ -139,9 +203,18 @@ final class MonitorStore: ObservableObject {
 
     init(demo: Bool = false) {
         isDemo = demo
+        relay = RelayMonitor(demo: demo)
+        agents = AgentMonitor(demo: demo)
+        relaySubscription = relay.objectWillChange.sink { [weak self] in self?.objectWillChange.send() }
+        agentSubscription = agents.objectWillChange.sink { [weak self] in self?.objectWillChange.send() }
         if demo {
             loadDemo()
         } else {
+            // User requested a quota-first menu; the floating panel remains an optional setting.
+            if !UserDefaults.standard.bool(forKey: "quotaMenuLayoutV1") {
+                floatingEnabled = false
+                UserDefaults.standard.set(true, forKey: "quotaMenuLayoutV1")
+            }
             let stored = UserDefaults.standard.data(forKey: AccountRegistry.accountsKey)
             let loaded = AccountRegistry.load()
             accounts = loaded.accounts
@@ -176,12 +249,17 @@ final class MonitorStore: ObservableObject {
     func start() {
         guard !isDemo else { return }
         selectedRuntime?.startLive()
+        syncQuotaRuntime()
+        relay.start()
+        agents.refresh()
         timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 guard let self, !self.stopping else { return }
                 self.now = Date()
+                self.relay.tick()
+                self.agents.refresh()
                 for (id, runtime) in self.runtimes {
-                    runtime.tick(role: id == self.selectedID ? .selected : .background)
+                    runtime.tick(role: self.role(for: id))
                 }
             }
         }
@@ -189,6 +267,8 @@ final class MonitorStore: ObservableObject {
 
     func stop() {
         stopping = true
+        relay.stop()
+        agents.stop()
         timer?.invalidate()
         for runtime in runtimes.values { runtime.stopLive() }
     }
@@ -196,18 +276,34 @@ final class MonitorStore: ObservableObject {
     func refresh() {
         guard !isDemo else { return }
         now = Date()
+        relay.refresh()
+        agents.refresh()
+        relay.refreshBalances(force: true)
         for (id, runtime) in runtimes {
-            runtime.refreshAll(role: id == selectedID ? .selected : .background)
+            runtime.refreshAll(role: role(for: id))
         }
     }
 
     func refreshAllAccounts() {
         guard !isDemo else { return }
         refresh()
-        accountStatus = "已请求刷新：选中账户读取额度与用量，后台账户读取余额/保留上次快照。"
+        accountStatus = "已请求刷新：GPT 额度持续读取，选中账户读取用量，Grok 读取客户端缓存，Claude 查询当前中转额度。"
     }
 
     // MARK: - Runtime plumbing
+
+    private func role(for id: UUID) -> AccountRuntime.Role {
+        if id == selectedID { return .selected }
+        if id == menuGPTAccount?.id { return .quotaOnly }
+        return .background
+    }
+    private func syncQuotaRuntime() {
+        guard !isDemo else { return }
+        for runtime in runtimes.values where runtime.config.kind == .codex && role(for: runtime.id) == .background {
+            if runtime.isLive { runtime.stopLive() }
+        }
+        if let account = menuGPTAccount { runtime(for: account).startLive(includeLocal: account.id == selectedID) }
+    }
 
     @discardableResult
     private func runtime(for account: AccountConfig) -> AccountRuntime {
@@ -227,11 +323,13 @@ final class MonitorStore: ObservableObject {
             searchText = ""; expandedSessionID = nil; now = Date()
             return
         }
-        if let previous = selectedID { runtimes[previous]?.stopLive() }
+        let previous = selectedID
         selectedID = id
+        if let previous, previous != menuGPTAccount?.id { runtimes[previous]?.stopLive() }
         AccountRegistry.save(accounts, selected: id)
         searchText = ""; expandedSessionID = nil
         runtime(for: account).startLive()
+        syncQuotaRuntime()
         now = Date()
     }
 
@@ -351,6 +449,7 @@ final class MonitorStore: ObservableObject {
         }
         AccountRegistry.save(accounts, selected: selectedID)
         if selectedID == account.id, runtimes[account.id]?.isLive != true { runtimes[account.id]?.startLive() }
+        syncQuotaRuntime()
         showAccountEditor = false
         if settingsError == nil { accountStatus = "已保存「\(account.displayName)」。" }
     }
@@ -375,6 +474,7 @@ final class MonitorStore: ObservableObject {
             }
         }
         AccountRegistry.save(accounts, selected: selectedID)
+        syncQuotaRuntime()
         accountStatus = "已删除账户。"
     }
 
@@ -416,7 +516,7 @@ final class MonitorStore: ObservableObject {
             if enabled { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }
             loginEnabled = SMAppService.mainApp.status == .enabled
             if SMAppService.mainApp.status == .requiresApproval {
-                settingsError = "请在系统设置 → 通用 → 登录项中允许 Codex Pulse。"
+                settingsError = "请在系统设置 → 通用 → 登录项中允许 AI Pulse。"
                 SMAppService.openSystemSettingsLoginItems()
             }
         } catch { settingsError = "登录项设置失败。请从 Applications 中运行应用后重试。" }
@@ -433,6 +533,19 @@ final class MonitorStore: ObservableObject {
             "selected": selectedAccount?.displayName ?? "",
             "statusBar": statusLabel
         ]
+        summary["relay"] = relay.diagnostics()
+        summary["agentMonitor"] = [
+            "claudeHooks": agents.hookStatus[.claude] ?? false,
+            "grokHooks": agents.hookStatus[.grok] ?? false,
+            "claudeSessions": agents.records.filter { $0.agent == .claude }.count,
+            "grokSessions": agents.records.filter { $0.agent == .grok }.count,
+            "floatingEnabled": floatingEnabled,
+            "readOK": agents.error == nil
+        ]
+        summary["grokBot"] = ["running": agents.grokBotRunning, "signedIn": agents.grokBot?.signedIn ?? false,
+                              "quotaCacheAvailable": agents.grokBot?.quota != nil,
+                              "quotaCacheStale": agents.grokBot?.quota?.isStale(now: now) ?? true,
+                              "taskStateAvailable": false]
         summary["accounts"] = accounts.map { account -> [String: Any] in
             var item: [String: Any] = [
                 "name": account.displayName,

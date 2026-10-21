@@ -1,19 +1,72 @@
-# Codex Pulse
+# AI Pulse
 
-一个原生 macOS 菜单栏小工具，随时查看 Codex / DeepSeek 账户的额度、余额与 Token 用量，以及本机任务执行情况。SwiftUI + AppKit，中文界面，支持系统浅色 / 深色外观，无第三方运行时依赖。
+一个原生 macOS 菜单栏小工具，直接显示 GPT / Codex、Grok Bot 的剩余额度数字，点开查看来源、重置时间、Claude 当前中转额度、DeepSeek 余额、Token 用量与本机任务。SwiftUI + AppKit，中文界面，支持系统浅色 / 深色外观，无第三方运行时依赖。
 
-![Codex Pulse 演示界面](docs/preview-dark.png)
+![AI Pulse 演示界面（合成读数）](docs/quota-menu-dark.png)
 
 ## 能看到什么
 
-- **菜单栏**：活跃任务数 + 当前账户的主指标。Codex 账户显示额度剩余百分比（`2 · 72%`），DeepSeek 账户显示余额（`2 · ¥14.78`）。数据过期、断连或读取失败时显示 `—`。
+- **菜单栏**：仅显示 `gpt 96；grok 66` 这样的剩余百分比数字，无图标、百分号或 Claude。悬停及点击展开可查看完整额度、来源、更新时间和旧缓存标记；`—` 表示来源未返回剩余额度。
 - **多账户**：可同时登记多个账户，每个账户绑定一个 Codex 数据目录，面板右上角快速切换，设置页新增 / 编辑 / 删除。
 - **DeepSeek 余额**：余额、赠送 / 充值拆分、账户是否可用、今日观测消耗（本机运行期间抓到的余额变化）。
 - **Token 用量**：按本机 Codex 日志统计每次请求的增量 Token，按事件时间归入本地日期，并可查看输入 / 缓存命中 / 输出与按模型拆分。
 - **额度**：按服务端实际返回的窗口展示剩余比例、重置时间、多模型额度、积分余额，以及可用 Reset 次数和每次到期时间。
 - **任务**：本机最近 60 个未归档会话的标题、项目、模型、活动、执行状态、本轮 / 会话累计 Token、最近输入上下文占比。
 - **账号使用**：累计 Token、连续使用天数、最近 7 个有记录日期的 Token 柱状图。
-- **设置**：账户列表与编辑器、跟随系统 / 浅色 / 深色主题、状态栏仅图标、登录时启动、每个账户的数据目录与 CLI 路径。开机启动默认关闭。
+- **设置**：账户列表与编辑器、跟随系统 / 浅色 / 深色主题、可选悬浮窗、登录时启动、每个账户的数据目录与 CLI 路径。开机启动默认关闭。
+
+## 0.5.2 精简状态栏
+
+![状态栏文字（原生控件渲染，合成读数）](docs/quota-status-demo.png)
+
+- 状态栏固定使用小写 `gpt 数字；grok 数字`，移除图标、百分号、缓存星号和 Claude。数字仍为原来源的剩余百分比，来源、旧缓存标记与读取时间可在悬停和展开页查看；未知值仍显示 `—`。
+- Claude 中转监控和展开页继续可用，原有账户与设置保留。
+
+## 0.5.1 状态栏显示三家剩余额度
+
+- 菜单栏固定显示 GPT、Grok、Claude，取代活跃任务数 / 今日 CC 请求数。点击状态栏总是打开「概览」，顶部直接展开三家的读数、来源、重置时间、同步时间和缺失原因；任务与中转明细继续保留。
+- GPT 显示 Codex 账户最紧额度窗口的剩余比例。详情切到 DeepSeek 等账户时，仍为一个 Codex 账户保留额度连接；后台只轮询额度，不持续解析该账户的任务日志。
+- Grok 显示桌面 Grok Bot 当前账户的额度缓存；旧缓存加 `*`，详情显示真实读取时间。Claude 只采用 CC Switch **当前提供商**返回的账户余额，或明确标为 `Key` 的独立限额；不选其他中转替代，也不把累计消耗或「Key 不限额」当成余额。
+- 当前中转未返回余额时，Claude 显示 `—` 并在展开页解释。保留服务实际给出的货币 / 单位，不把三家额度相加。
+- 升级后默认只显示状态栏，悬浮灯移为设置中的可选功能；重新开启后仍能记住位置。旧的仅图标偏好保留在本机，但不再隐藏三家额度文字。
+
+## 0.5.0 悬浮状态灯与 Grok
+
+![悬浮状态灯（合成演示数据）](docs/floating-dark.png)
+
+- 新增原生置顶浮窗，拖动空白处移动，位置自动保存；点击任务打开主面板，右上角隐藏后可从「设置 → 悬浮状态灯」重新显示。每个会话独立亮灯，按等待回应、执行、待确认、已回复排序，最多显示 8 行。
+- 红灯：有明确的等待输入 / 权限事件；黄灯：正在执行；绿灯：就绪 / 本轮已回复；灰灯：状态待确认。无新事件超过两分钟不会自动判为完成；已关闭和过旧会话退出浮窗。
+- Codex 复用现有本机日志，不修改 Codex 配置。Claude Code 和 **Grok CLI** 通过本地事件独立采集，任务页和概览也可查看。Grok 的旧轮次结束事件与子任务事件不会结算当前主会话；继承的 Claude hooks 不会把 Grok 误记为 CC。
+- **桌面 Grok Bot** 独立显示客户端在线 / 登录状态、当前账户的额度剩余比例、重置时间和缓存读取时间。来源是客户端自己的 `desktop-status.json` 与 `sand-client-persistence` 中的账户指针 / `weekly-usage.cache`；超过五分钟标注「上次记录」。不读取 secrets、对话、草稿或浏览器存储，不发起额外模型或额度网络请求。
+- 桌面客户端缓存没有明确的任务运行状态，所以其浮窗条目显示灰灯「客户端在线 · 任务状态未提供」；不把客户端进程存在解释成某个 Bot 正在执行。桌面客户端与 Grok CLI 的状态来源分开展示。
+- 在设置中可分别启用 / 移除 Claude Code、Grok CLI 状态采集。启用时备份并合并 `~/.claude/settings.json` 与 `~/.grok/hooks/ai-pulse.json`，只移除自己的 handler，保留其他设置与 hooks；新开会话后生效。已有 CC Switch 用量与余额监控保持独立。
+- hook 直接调用已安装 App 的无界面事件入口，只保留会话 ID、项目目录、工具名、轮次 ID 和状态；不保存提示词、工具参数、工具输出、回答或错误正文，不输出审批决定，不监听网络端口。状态保存在权限受限的 `~/.local/share/ai-pulse/agent-sessions/`，按来源 + 会话哈希隔离并加锁原子更新。
+
+已安装后也可运行以下命令安装 / 移除采集（设置界面提供相同功能）：
+
+```bash
+"$HOME/Applications/AI Pulse.app/Contents/MacOS/CodexPulse" --install-agent-hooks
+"$HOME/Applications/AI Pulse.app/Contents/MacOS/CodexPulse" --remove-agent-hooks
+```
+
+状态灯是本机可观测事件的提示。`Stop` 表示本轮回复触发了结束 hook；其他阻塞式 Stop hooks 仍可能让助手继续，后续活动会重新变黄。桌面 Grok Bot 适配核对自本机 0.71.2 的缓存格式；升级后格式不兼容时显示未知，不猜测数值。
+
+## 0.4.0 AI Pulse：同时监控 Codex 与 Claude Code
+
+![Claude Code 中转监控（合成演示数据）](docs/relay-dark.png)
+
+- 原 Codex Pulse 改名为 **AI Pulse**，保留原 bundle identifier，已有账户、主题、目录映射、钥匙串和 Reset 记录继续使用。
+- Claude Code 监控独立运行，不随 Codex 账户选择启停。概览卡和状态栏同时显示今日 CC 代理请求，新增「中转 / CC」页。
+- 每 6 秒只读 `~/.cc-switch/cc-switch.db`，统计今日 / 7 天 / 30 天的代理请求、成功与失败、输入 / 输出 / 缓存读取 / 缓存写入 Token、USD 费用估算，并按提供商或模型查看最近请求。
+- 每 60 秒使用 CC Switch 中相应提供商的凭据查询已核验的 **4Router / ZZS** `GET /api/usage/token/`；同时读取公开 `/api/status` 的 `quota_per_unit`、`quota_display_type` 和汇率后转换显示。缺少转换元数据时保留原始额度单位。
+- 账户余额、Key 剩余额度、Key 累计消耗分别标注。Key 的 `unlimited_quota` 仅表示 Key 不单独限额，不能解释为账户余额无限；缺少账户余额时明确显示接口未返回。同站不同 Key 的账户余额不可相加。
+- 请求吞吐 = 上游输出 Token / 整次请求耗时；首字后吞吐 = 输出 Token /（整次耗时 − 首字延迟），仅统计成功流式请求且首字后区间至少 250 ms 的记录。按总 Token / 总时间加权。上游缓冲、思考 Token 与网络会影响数值，均不能当成服务端纯生成速度。
+- 只统计 `app_type=claude`、`data_source=proxy`，排除 Claude Desktop 和 Codex 记录；导入的会话记录数量单列，避免与代理重复统计。历史数据限 CC Switch 尚保留的请求，不回填已清理记录。
+- CC Switch 费用是本地价格表及倍率的估算，与中转服务端扣费分开；人民币与美元不合并。请求库或余额查询失败显示失败 / 未知，过期余额标为上次记录。
+
+使用 [CC Switch 用量记录的字段与数据源](https://github.com/farion1231/cc-switch/blob/main/docs/user-manual/en/4-proxy/4.4-usage.md)，不修改代理、不安装 Claude hooks、不发起模型请求。余额凭据只在查询时从数据库提取到内存，不进入偏好、日志、诊断、截图或仓库；禁止凭据请求跟随重定向。设置可关闭中转额度网络查询。
+
+安装脚本将旧版本压缩备份至 `~/.local/share/ai-pulse/backups/`，退出旧进程后替换为 `~/Applications/AI Pulse.app`，避免旧名称应用副本继续出现在 Spotlight。
 
 ## 0.3.1 Reset 到期记录
 
@@ -25,7 +78,7 @@
 
 - 账户分两种类型：**Codex**（ChatGPT / Codex 登录，额度与账号用量来自 app-server）和 **DeepSeek**（余额来自官方余额接口，用量来自本机日志）。同一个数据目录可以按需要分别登记成两种类型。
 - DeepSeek 账户不启动 app-server：把 `model_provider` 切到 DeepSeek 之后，Codex 的额度接口已经不可用（返回 `codex account authentication required`）。
-- 余额每 30 秒刷新；本机任务一完成立即补一次刷新。Token 用量每 2 秒增量读取日志，不重复解析整个文件。
+- 余额每 30 秒刷新；本机任务一完成立即补一次刷新。Token 用量每 2 秒增量读取 Codex 日志，不重复解析整个文件。
 - 用量归属按每轮 `turn_context` 的模型名判定。切换提供商之后，同一份日志里会同时存在 DeepSeek 轮次和其他模型轮次，此时只有 DeepSeek 轮次计入 DeepSeek 账户。
 - 切换账户会先丢弃上一个账户的快照，不会出现 A 账户数字留在 B 账户名字下面的情况。后台账户只按 10 分钟读取 DeepSeek 余额，Codex 账户保留上次快照直到切换过去。
 
@@ -62,9 +115,9 @@ cd codex-pulse
 ./scripts/build.sh --install
 ```
 
-脚本构建 `dist/Codex Pulse.app`，复制到 `~/Applications/Codex Pulse.app` 并启动。应用仅在状态栏显示，不占 Dock。更新安装前请先退出旧版本。
+脚本构建 `dist/AI Pulse.app`，复制到 `~/Applications/AI Pulse.app` 并启动。应用仅在状态栏显示，不占 Dock。安装时自动退出并备份旧版本。
 
-仅构建：`./scripts/build.sh`。退出：面板右下角电源按钮。卸载：退出后移除该 App；如果启用了登录时启动，先在设置中关闭。
+仅构建：`./scripts/build.sh`。安装脚本会自动退出旧版本并备份。退出：面板右下角电源按钮。卸载：退出后移除该 App；如果启用了登录时启动，先在设置中关闭。
 
 本地构建使用 ad-hoc 签名，未经过 Apple 公证。分发到另一台 Mac 建议在目标机器上从源码构建。
 
@@ -107,17 +160,18 @@ DeepSeek 余额请求需要凭据，处理方式是：优先使用你在设置�
 ./scripts/swift-tool.sh build
 ./scripts/swift-tool.sh test
 ./scripts/build.sh
-"dist/Codex Pulse.app/Contents/MacOS/CodexPulse" --diagnose
-"dist/Codex Pulse.app/Contents/MacOS/CodexPulse" --usage-check
-"dist/Codex Pulse.app/Contents/MacOS/CodexPulse" --demo --show --ui-check
-"dist/Codex Pulse.app/Contents/MacOS/CodexPulse" --demo --dark --screenshot /tmp/pulse-dark.png
-"dist/Codex Pulse.app/Contents/MacOS/CodexPulse" --demo --kind codex --dark --screenshot /tmp/pulse-codex.png
-"dist/Codex Pulse.app/Contents/MacOS/CodexPulse" --demo --dark --screenshot /tmp/pulse-usage.png --tab 2
+"dist/AI Pulse.app/Contents/MacOS/CodexPulse" --diagnose
+"dist/AI Pulse.app/Contents/MacOS/CodexPulse" --usage-check
+"dist/AI Pulse.app/Contents/MacOS/CodexPulse" --demo --show --ui-check
+"dist/AI Pulse.app/Contents/MacOS/CodexPulse" --demo --dark --screenshot /tmp/pulse-dark.png
+"dist/AI Pulse.app/Contents/MacOS/CodexPulse" --demo --screenshot /tmp/pulse-relay.png --tab 4
+"dist/AI Pulse.app/Contents/MacOS/CodexPulse" --demo --kind codex --dark --screenshot /tmp/pulse-codex.png
+"dist/AI Pulse.app/Contents/MacOS/CodexPulse" --demo --dark --screenshot /tmp/pulse-usage.png --tab 2
 ```
 
 `--diagnose` 运行 20 秒后退出，`--usage-check` 运行 12 秒。两者按账户输出连接状态、额度 / 余额是否可用、最近一次 Reset 次数与逐张到期时间，以及用量账本读取的日志份数、日期与 Token 合计（`--usage-check` 另给最近日期明细与凭据来源），不输出凭据本身、标题、账号 ID、Reset ID、积分或日志正文。演示模式不连接 CLI、不联网、不读取本机会话；`--demo --kind codex` 选择演示里的 Codex 账户，默认是 DeepSeek 账户。`scripts/swift-tool.sh` 为部分 Command Line Tools 版本补全其自带 SwiftPM 框架搜索路径，所有设置仅影响当前构建进程。
 
-`--show` 打开实际状态栏弹窗；`--ui-check` 只在标准输出记录弹窗显示 / 关闭，供原生交互验证。`--tab 0/1/2/3` 可选择截图页面。
+`--show` 打开实际状态栏弹窗；`--ui-check` 只在标准输出记录弹窗显示 / 关闭，供原生交互验证。`--tab 0/1/2/3/4` 可选择截图页面。
 
 测试覆盖：任务跨字段搜索、状态筛选、不同排序与稳定顺序；任务生命周期、长时间无事件、跨轮次结束事件、累计 Token 去重、缺失额度、不同时长窗口、过期重置时间、分段写入、日志截断 / 替换及有界尾部读取；`config.toml` provider 扫描与凭据优先级、DeepSeek 余额解码与端点拼接、余额历史与观测消耗、账户注册表迁移、用量账本的按日 / 按模型归集、增量与半行追加、尾部截断边界、累计回退、窗口过滤、账户类型过滤、混合会话语义。
 
