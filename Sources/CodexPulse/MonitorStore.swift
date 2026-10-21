@@ -183,7 +183,7 @@ final class MonitorStore: ObservableObject {
         quotaMenu.filter { $0.id == "gpt" || $0.id == "grok" }
     }
     var statusLabel: String {
-        statusBarQuotas.map { "\($0.id) \($0.value.replacingOccurrences(of: "%", with: ""))" }
+        statusBarQuotas.map { "\($0.title) \($0.value)" }
             .joined(separator: "；")
     }
     var statusTooltip: String {

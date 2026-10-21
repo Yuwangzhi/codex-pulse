@@ -616,7 +616,7 @@ struct DashboardView: View {
                 Picker("界面主题", selection: $store.theme) {
                     ForEach(["跟随系统", "浅色", "深色"], id: \.self) { Text($0) }
                 }.font(.system(size: 12))
-                Text("状态栏仅显示 gpt、grok 的剩余百分比数字，无图标。悬停或点击查看来源与缓存时间；— 表示来源未提供。")
+                Text("状态栏仅显示 GPT、Grok 的剩余百分比，无图标。悬停或点击查看来源与缓存时间；— 表示来源未提供。")
                     .font(.system(size: 10)).foregroundStyle(.secondary)
                 Toggle("登录时启动", isOn: Binding(get: { store.loginEnabled }, set: { store.toggleLogin($0) }))
                     .font(.system(size: 12)).disabled(store.isDemo)
