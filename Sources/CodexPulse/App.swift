@@ -40,7 +40,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             if let button = item.button {
                 button.image = nil
                 button.imagePosition = .noImage
-                button.font = .monospacedDigitSystemFont(ofSize: 11, weight: .medium)
+                button.font = .monospacedDigitSystemFont(ofSize: 9, weight: .medium)
+                button.cell?.usesSingleLineMode = false
+                button.cell?.wraps = true
                 button.target = self; button.action = #selector(togglePopover)
                 button.setAccessibilityLabel("AI Pulse，点击展开额度详情")
             }
@@ -125,7 +127,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
 
     private func updateStatus() {
-        item?.button?.title = store.statusLabel
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.alignment = .left
+        paragraph.minimumLineHeight = 10
+        paragraph.maximumLineHeight = 10
+        let title = NSAttributedString(string: store.statusLabel, attributes: [
+            .font: NSFont.monospacedDigitSystemFont(ofSize: 9, weight: .medium),
+            .paragraphStyle: paragraph,
+            .baselineOffset: -3
+        ])
+        item?.length = ceil(title.size().width) + 12
+        item?.button?.attributedTitle = title
         item?.button?.toolTip = store.statusTooltip
         item?.button?.setAccessibilityLabel("AI Pulse，\(store.statusLabel)，点击展开额度详情")
         floating?.update()

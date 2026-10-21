@@ -186,7 +186,7 @@ final class MonitorStore: ObservableObject {
     }
     var statusLabel: String {
         statusBarQuotas.map { "\($0.title) \($0.value)" }
-            .joined(separator: "；")
+            .joined(separator: "\n")
     }
     var statusTooltip: String {
         statusBarQuotas.map { item in
