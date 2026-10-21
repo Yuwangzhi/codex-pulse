@@ -103,7 +103,7 @@ struct AgentSessionsSection: View {
             } else if let error = store.agents.grokBotError {
                 Text(error).font(.system(size: 10)).foregroundStyle(.orange)
             }
-            Text("终端 Grok 通过会话事件显示状态；桌面 Grok Bot 单独显示客户端缓存。")
+            Text("终端 Grok 通过会话事件显示状态；桌面 Grok Bot 单独显示额度与来源。")
                 .font(.system(size: 9)).foregroundStyle(.tertiary)
         }.padding(14).background(.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 14))
     }
@@ -195,7 +195,13 @@ struct AgentMonitoringSettings: View {
             }
             Text("启用时备份并合并事件配置，原有设置保留；新开 Claude Code / Grok 会话后生效。仅保存会话、项目、工具名和状态，不保存对话内容。Codex 沿用现有本机任务日志。")
                 .font(.system(size: 10)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            Text("桌面 Grok Bot：只读当前账户的本地额度缓存，标注读取时间；不读取凭据或对话。客户端尚未提供明确任务状态，因此显示灰灯待确认。")
+            Button("授权并刷新 Grok 额度") {
+                store.agents.refreshGrokQuota(force: true, allowInteraction: true)
+            }.disabled(store.isDemo || store.agents.grokQuotaBusy)
+            if let error = store.agents.grokQuotaError {
+                Text(error).font(.system(size: 10)).foregroundStyle(.secondary)
+            }
+            Text("Grok 额度每 60 秒主动查询；首次需允许读取 Grok Bot 登录。凭据仅用于原服务的 HTTPS 额度请求，不保存或显示。失败时保留旧记录及来源，不读取对话。桌面客户端未提供明确任务状态，因此仍显示灰灯待确认。")
                 .font(.system(size: 10)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }.font(.system(size: 12)).padding(16)
             .background(.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 14))
@@ -228,10 +234,10 @@ struct GrokBotCard: View {
                     Text("\(reset.formatted(date: .abbreviated, time: .shortened)) 重置")
                         .font(.system(size: 10)).foregroundStyle(.secondary)
                 }
-                Text("客户端缓存 · \(DisplayFormat.age(quota.readAt, now: now))读取")
+                Text("\(quota.source == .server ? "服务端查询" : "客户端缓存") · \(DisplayFormat.age(quota.readAt, now: now))读取")
                     .font(.system(size: 9)).foregroundStyle(.tertiary)
             } else {
-                Text("尚无当前账户的额度缓存。打开 Grok Bot 的用量页面后会自动读取。")
+                Text("尚无当前账户的额度读数，请确认 Grok Bot 已登录，并授权查询。")
                     .font(.system(size: 10)).foregroundStyle(.secondary)
             }
         }

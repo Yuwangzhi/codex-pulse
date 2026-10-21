@@ -28,7 +28,7 @@ public struct QuotaMenuValue: Identifiable, Sendable {
         var result = Self(id: "grok", title: "Grok", value: "—", detail: "等待 Grok Bot 当前账户的额度缓存")
         guard let snapshot, snapshot.signedIn, let quota = snapshot.quota else { return result }
         result.value = "\(Int(quota.remainingPercent))%"
-        result.detail = "Grok Bot · 客户端额度缓存"
+        result.detail = quota.source == .server ? "Grok Bot · 服务端额度 · 每 60 秒查询" : "Grok Bot · 客户端额度缓存"
         if let reset = quota.resetAt { result.detail += "\n\(reset.formatted(date: .abbreviated, time: .shortened))重置" }
         result.updatedAt = quota.readAt
         result.stale = quota.isStale(now: now)

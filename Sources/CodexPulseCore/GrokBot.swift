@@ -1,17 +1,23 @@
 import Foundation
 
+public enum GrokQuotaSource: Sendable { case clientCache, server }
+
 public struct GrokBotQuota: Sendable {
     public var usedPercent: Double
     public var resetAt: Date?
     public var readAt: Date
     public var expiresAt: Date?
     public var plan: String?
+    public var source: GrokQuotaSource
+    public var refreshFailed = false
     public var remainingPercent: Double { max(0, 100 - usedPercent) }
-    public init(usedPercent: Double, resetAt: Date? = nil, readAt: Date, expiresAt: Date? = nil, plan: String? = nil) {
+    public init(usedPercent: Double, resetAt: Date? = nil, readAt: Date, expiresAt: Date? = nil, plan: String? = nil,
+                source: GrokQuotaSource = .clientCache) {
         self.usedPercent = usedPercent; self.resetAt = resetAt; self.readAt = readAt; self.expiresAt = expiresAt; self.plan = plan
+        self.source = source
     }
     public func isStale(now: Date) -> Bool {
-        now.timeIntervalSince(readAt) > 300 || (expiresAt.map { $0 <= now } ?? false)
+        refreshFailed || now.timeIntervalSince(readAt) > (source == .server ? 120 : 300) || (expiresAt.map { $0 <= now } ?? false)
     }
 }
 
@@ -20,8 +26,10 @@ public struct GrokBotSnapshot: Sendable {
     public var appVersion: String
     public var signedIn: Bool
     public var quota: GrokBotQuota?
-    public init(pid: Int32, appVersion: String, signedIn: Bool, quota: GrokBotQuota? = nil) {
+    public var accountSlot: String?
+    public init(pid: Int32, appVersion: String, signedIn: Bool, quota: GrokBotQuota? = nil, accountSlot: String? = nil) {
         self.pid = pid; self.appVersion = appVersion; self.signedIn = signedIn; self.quota = quota
+        self.accountSlot = accountSlot
     }
 }
 
@@ -90,6 +98,7 @@ public enum GrokBotReader {
         }
         guard let slotURL = keys.first(where: { $0.0 == "sand.client.slice.client-meta.account-slot" })?.1,
               let slot = try? decoder.decode(Envelope<String>.self, from: boundedData(slotURL)), slot.schemaVersion == 1 else { return snapshot }
+        snapshot.accountSlot = slot.value
         // Match JS encodeURIComponent, and only the currently selected account.
         let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_.!~*'()"))
         guard let scope = slot.value.addingPercentEncoding(withAllowedCharacters: allowed),

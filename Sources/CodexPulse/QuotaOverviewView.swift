@@ -9,7 +9,7 @@ struct QuotaOverviewView: View {
                 Text("剩余额度").font(.system(size: 13, weight: .semibold))
                 Spacer()
                 Button { store.refresh() } label: { Image(systemName: "arrow.clockwise") }
-                    .buttonStyle(.plain).help("刷新三家额度；Grok 读取客户端最新缓存")
+                    .buttonStyle(.plain).help("刷新三家额度；GPT、Grok 主动查询服务端")
                     .accessibilityLabel("刷新三家额度")
             }
             ForEach(store.quotaMenu) { item in
@@ -27,6 +27,12 @@ struct QuotaOverviewView: View {
                         }
                     }.frame(maxWidth: .infinity, alignment: .leading)
                 }.accessibilityElement(children: .combine)
+            }
+            if let error = store.agents.grokQuotaError {
+                Button("授权并刷新 Grok") {
+                    store.agents.refreshGrokQuota(force: true, allowInteraction: true)
+                }.font(.system(size: 11)).disabled(store.isDemo || store.agents.grokQuotaBusy)
+                    .help(error)
             }
             Text("* 上次记录 / 旧缓存　— 来源未提供")
                 .font(.system(size: 9)).foregroundStyle(.tertiary)

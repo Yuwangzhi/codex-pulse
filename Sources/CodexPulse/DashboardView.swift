@@ -636,7 +636,7 @@ struct DashboardView: View {
             Text("数据仅在本机展示。Pulse 不发起模型任务，也不消费额度重置次数。DeepSeek 余额请求只在该账户的内存里使用你的凭据：优先 macOS 钥匙串中保存的 Key，其次该账户 config.toml 里的 provider bearer token 或 env_key；不读取 auth.json，不写入日志，界面与诊断输出都不包含密钥。")
                 .font(.system(size: 10)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             HStack {
-                Text("AI Pulse 0.5.2").foregroundStyle(.secondary)
+                Text("AI Pulse 0.5.3").foregroundStyle(.secondary)
                 Spacer()
                 Link("接口说明 ↗", destination: URL(string: "https://learn.chatgpt.com/docs/app-server")!)
             }.font(.system(size: 10))

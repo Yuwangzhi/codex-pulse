@@ -70,11 +70,19 @@ final class AgentMonitor: ObservableObject {
     @Published private(set) var setupMessage: String?
     @Published private(set) var grokBot: GrokBotSnapshot?
     @Published private(set) var grokBotError: String?
+    @Published private(set) var grokQuotaError: String?
+    @Published private(set) var grokQuotaBusy = false
     var grokBotRunning: Bool { grokBot.map { kill($0.pid, 0) == 0 || errno == EPERM } ?? false }
     private var reading = false
     private var stopped = false
     private let demo: Bool
     private var lastHookCheck = Date.distantPast
+    private var lastQuotaAttempt: Date?
+    private var serverQuota: GrokBotQuota?
+    private var serverAccountSlot: String?
+    private var quotaTask: Task<Void, Never>?
+    private var lastSelectionID: String?
+    private var cacheInvalidatedAt: Date?
 
     init(demo: Bool) {
         self.demo = demo
@@ -104,13 +112,77 @@ final class AgentMonitor: ObservableObject {
             case .failure: error = "会话状态暂时无法读取，稍后自动重试。"
             }
             switch desktop {
-            case .success(let snapshot): grokBot = snapshot; grokBotError = nil
+            case .success(let snapshot): applyDesktop(snapshot); grokBotError = nil
             case .failure: grokBot = nil; grokBotError = "Grok Bot 本地缓存暂不可读。"
             }
             reading = false
+            refreshGrokQuota()
         }
     }
-    func stop() { stopped = true }
+    private func applyDesktop(_ snapshot: GrokBotSnapshot?) {
+        if snapshot?.accountSlot != grokBot?.accountSlot || snapshot?.signedIn != true {
+            quotaTask?.cancel(); quotaTask = nil; grokQuotaBusy = false
+            serverQuota = nil; serverAccountSlot = nil; lastQuotaAttempt = nil; grokQuotaError = nil
+        }
+        var snapshot = snapshot
+        if let slot = snapshot?.accountSlot {
+            do {
+                let scope = try GrokQuotaCredentials.currentScope()
+                let selection = try GrokQuotaCredentials.currentSelectionID()
+                if let previous = lastSelectionID, previous != selection {
+                    serverQuota = nil; serverAccountSlot = nil; lastQuotaAttempt = nil
+                    cacheInvalidatedAt = Date()
+                    quotaTask?.cancel(); quotaTask = nil; grokQuotaBusy = false
+                }
+                lastSelectionID = selection
+                if scope != GrokQuotaCredentials.scope(for: slot) {
+                    snapshot?.quota = nil; serverQuota = nil; serverAccountSlot = nil
+                }
+                if let date = cacheInvalidatedAt, let readAt = snapshot?.quota?.readAt, readAt < date {
+                    snapshot?.quota = nil
+                }
+            } catch {
+                serverQuota = nil; serverAccountSlot = nil
+            }
+        }
+        if let live = serverQuota, serverAccountSlot == snapshot?.accountSlot,
+           live.readAt >= (snapshot?.quota?.readAt ?? .distantPast) { snapshot?.quota = live }
+        if grokQuotaError != nil { snapshot?.quota?.refreshFailed = true }
+        grokBot = snapshot
+    }
+
+    func refreshGrokQuota(force: Bool = false, allowInteraction: Bool = false) {
+        guard !demo, !stopped, !grokQuotaBusy, grokBot?.signedIn == true,
+              let slot = grokBot?.accountSlot else { return }
+        guard force || lastQuotaAttempt.map({ Date().timeIntervalSince($0) >= 60 }) ?? true else { return }
+        lastQuotaAttempt = Date(); grokQuotaBusy = true
+        quotaTask = Task { [weak self] in
+            let result: Result<GrokBotQuota, Error> = await Task.detached(priority: .utility) {
+                do {
+                    let credentials = try GrokQuotaCredentials.load(accountSlot: slot, allowInteraction: allowInteraction)
+                    let quota = try await GrokQuotaAPI.fetch(credentials: credentials)
+                    guard try GrokQuotaCredentials.currentSelectionID() == credentials.selectionID else {
+                        throw GrokQuotaError.accountChanged
+                    }
+                    return .success(quota)
+                } catch let error as GrokQuotaError { return .failure(error) }
+                catch { return .failure(GrokQuotaError.credentials) }
+            }.value
+            guard let self, !Task.isCancelled, !self.stopped, self.grokBot?.signedIn == true,
+                  self.grokBot?.accountSlot == slot else { return }
+            self.grokQuotaBusy = false; self.quotaTask = nil
+            switch result {
+            case .success(let quota):
+                self.serverQuota = quota; self.serverAccountSlot = slot
+                self.grokBot?.quota = quota; self.grokQuotaError = nil
+            case .failure(let error):
+                self.grokQuotaError = error.localizedDescription
+                self.serverQuota?.refreshFailed = true
+                self.grokBot?.quota?.refreshFailed = true
+            }
+        }
+    }
+    func stop() { stopped = true; quotaTask?.cancel() }
     func checkHooks() {
         guard !demo, let executable = Bundle.main.executableURL else { return }
         hookStatus = Dictionary(uniqueKeysWithValues: MonitoredAgent.allCases.map {

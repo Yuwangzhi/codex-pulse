@@ -169,11 +169,13 @@ final class MonitorStore: ObservableObject {
         let currentProviders = (relay.snapshot?.providers ?? []).filter(\.current)
         let provider = currentProviders.count == 1 ? currentProviders.first : nil
         let state = provider.flatMap { relay.balances[$0.id] }
+        var grok = QuotaMenuValue.grok(snapshot: agents.grokBot, now: now)
+        if let error = agents.grokQuotaError { grok.detail += "\n" + error }
         return [
             .gpt(bucket: gpt?.quota?.rateLimits, updatedAt: gpt?.quotaUpdated,
                  connected: gpt?.connected ?? false, hasError: gpt?.quotaError != nil,
                  accountName: menuGPTAccount?.displayName ?? "Codex 账户", now: now),
-            .grok(snapshot: agents.grokBot, now: now),
+            grok,
             .claude(provider: provider, quota: state?.quota, unitsPerDollar: state?.unitsPerDollar,
                     currency: state?.currency, exchangeRate: state?.exchangeRate ?? 1, updatedAt: state?.updated,
                     hasError: relay.error != nil || state?.error != nil, now: now)
@@ -279,6 +281,7 @@ final class MonitorStore: ObservableObject {
         relay.refresh()
         agents.refresh()
         relay.refreshBalances(force: true)
+        agents.refreshGrokQuota(force: true)
         for (id, runtime) in runtimes {
             runtime.refreshAll(role: role(for: id))
         }
@@ -287,7 +290,7 @@ final class MonitorStore: ObservableObject {
     func refreshAllAccounts() {
         guard !isDemo else { return }
         refresh()
-        accountStatus = "已请求刷新：GPT 额度持续读取，选中账户读取用量，Grok 读取客户端缓存，Claude 查询当前中转额度。"
+        accountStatus = "已请求刷新：GPT、Grok 主动查询额度，选中账户读取用量，Claude 查询当前中转额度。"
     }
 
     // MARK: - Runtime plumbing
@@ -545,6 +548,9 @@ final class MonitorStore: ObservableObject {
         summary["grokBot"] = ["running": agents.grokBotRunning, "signedIn": agents.grokBot?.signedIn ?? false,
                               "quotaCacheAvailable": agents.grokBot?.quota != nil,
                               "quotaCacheStale": agents.grokBot?.quota?.isStale(now: now) ?? true,
+                              "quotaSource": agents.grokBot?.quota?.source == .server ? "server" : "client-cache",
+                              "quotaQueryOK": agents.grokQuotaError == nil && agents.grokBot?.quota?.source == .server,
+                              "quotaQueryError": agents.grokQuotaError ?? "",
                               "taskStateAvailable": false]
         summary["accounts"] = accounts.map { account -> [String: Any] in
             var item: [String: Any] = [
