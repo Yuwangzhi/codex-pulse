@@ -31,7 +31,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         let demo = args.contains("--demo")
         let diagnosing = args.contains("--diagnose") || args.contains("--usage-check")
         let usageCheck = args.contains("--usage-check")
-        store = MonitorStore(demo: demo)
+        store = MonitorStore(demo: demo, demoClaude: !args.contains("--demo-no-claude"))
         if demo && args.contains("--dark") { store.theme = "深色" }
         if !diagnosing {
             floating = FloatingSessionsController(store: store)
@@ -127,19 +127,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
 
     private func updateStatus() {
+        let layout = store.statusLayout
+        let font = NSFont.monospacedDigitSystemFont(ofSize: 9, weight: .medium)
+        let leftWidth = ceil(layout.left.map { ($0 as NSString).size(withAttributes: [.font: font]).width }.max() ?? 0)
+        let rightWidth = ceil(layout.right.map { ($0 as NSString).size(withAttributes: [.font: font]).width }.max() ?? 0)
+        let width = leftWidth + (layout.hasRightColumn ? 10 + rightWidth : 0)
         let paragraph = NSMutableParagraphStyle()
         paragraph.alignment = .left
+        paragraph.tabStops = [NSTextTab(textAlignment: .right, location: width, options: [:])]
         paragraph.minimumLineHeight = 10
         paragraph.maximumLineHeight = 10
         let title = NSAttributedString(string: store.statusLabel, attributes: [
-            .font: NSFont.monospacedDigitSystemFont(ofSize: 9, weight: .medium),
+            .font: font,
             .paragraphStyle: paragraph,
             .baselineOffset: -3
         ])
-        item?.length = ceil(title.size().width) + 12
+        item?.length = width + 12
         item?.button?.attributedTitle = title
         item?.button?.toolTip = store.statusTooltip
-        item?.button?.setAccessibilityLabel("AI Pulse，\(store.statusLabel)，点击展开额度详情")
+        item?.button?.setAccessibilityLabel("AI Pulse，\(store.statusTooltip)")
         floating?.update()
     }
     @objc private func togglePopover() {

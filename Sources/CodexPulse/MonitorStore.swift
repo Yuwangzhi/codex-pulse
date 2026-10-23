@@ -61,6 +61,7 @@ final class MonitorStore: ObservableObject {
 
     let relay: RelayMonitor
     let agents: AgentMonitor
+    let claude: ClaudeUsageMonitor
     let isDemo: Bool
 
     // MARK: - Live state
@@ -70,6 +71,7 @@ final class MonitorStore: ObservableObject {
     private var timer: Timer?
     private var relaySubscription: AnyCancellable?
     private var agentSubscription: AnyCancellable?
+    private var claudeSubscription: AnyCancellable?
     private var stopping = false
 
     var selectedRuntime: AccountRuntime? { selectedID.flatMap { runtimes[$0] } }
@@ -166,32 +168,29 @@ final class MonitorStore: ObservableObject {
     }
     var quotaMenu: [QuotaMenuValue] {
         let gpt = menuGPTAccount.flatMap { runtimes[$0.id] }
-        let currentProviders = (relay.snapshot?.providers ?? []).filter(\.current)
-        let provider = currentProviders.count == 1 ? currentProviders.first : nil
-        let state = provider.flatMap { relay.balances[$0.id] }
         var grok = QuotaMenuValue.grok(snapshot: agents.grokBot, now: now)
         if let error = agents.grokQuotaError { grok.detail += "\n" + error }
         return [
             .gpt(bucket: gpt?.quota?.rateLimits, updatedAt: gpt?.quotaUpdated,
                  connected: gpt?.connected ?? false, hasError: gpt?.quotaError != nil,
                  accountName: menuGPTAccount?.displayName ?? "Codex 账户", now: now),
-            grok,
-            .claude(provider: provider, quota: state?.quota, unitsPerDollar: state?.unitsPerDollar,
-                    currency: state?.currency, exchangeRate: state?.exchangeRate ?? 1, updatedAt: state?.updated,
-                    hasError: relay.error != nil || state?.error != nil, now: now)
+            grok
         ]
     }
-    private var statusBarQuotas: [QuotaMenuValue] {
-        quotaMenu.filter { $0.id == "gpt" || $0.id == "grok" }
+    var statusLayout: QuotaStatusLayout {
+        let rows = quotaMenu
+        return QuotaStatusLayout(gpt: rows[0].value, grok: rows[1].value, claude: claude.snapshot, now: now)
     }
-    var statusLabel: String {
-        statusBarQuotas.map { "\($0.title) \($0.value)" }
-            .joined(separator: "\n")
-    }
+    var statusLabel: String { statusLayout.text }
     var statusTooltip: String {
-        statusBarQuotas.map { item in
-            item.menuText + "：" + item.detail + (item.updatedAt.map { " · \(DisplayFormat.age($0, now: now))读取" } ?? "")
-        }.joined(separator: "\n") + "\n* 表示上次记录或旧缓存；点击展开详情。"
+        let remaining = quotaMenu.map { item in
+            item.menuText + " 剩余：" + item.detail + (item.updatedAt.map { " · \(DisplayFormat.age($0, now: now))读取" } ?? "")
+        }.joined(separator: "\n")
+        let top = statusLayout.right[0], bottom = statusLayout.right[1]
+        let official = "Claude 官方剩余：5 小时 " + (top.isEmpty ? "未提供" : top)
+            + " · 每周 " + (bottom.isEmpty ? "未提供" : bottom)
+        let stale = claude.isStale(now: now) ? " · 上次记录" : ""
+        return remaining + "\n" + official + stale + "\n" + claude.detail + "\n* 表示上次记录或旧缓存；点击展开详情。"
     }
 
     var headerStatusText: String {
@@ -203,12 +202,14 @@ final class MonitorStore: ObservableObject {
 
     // MARK: - Init
 
-    init(demo: Bool = false) {
+    init(demo: Bool = false, demoClaude: Bool = true) {
         isDemo = demo
         relay = RelayMonitor(demo: demo)
         agents = AgentMonitor(demo: demo)
+        claude = ClaudeUsageMonitor(demo: demo, demoSignedIn: demoClaude)
         relaySubscription = relay.objectWillChange.sink { [weak self] in self?.objectWillChange.send() }
         agentSubscription = agents.objectWillChange.sink { [weak self] in self?.objectWillChange.send() }
+        claudeSubscription = claude.objectWillChange.sink { [weak self] in self?.objectWillChange.send() }
         if demo {
             loadDemo()
         } else {
@@ -254,12 +255,14 @@ final class MonitorStore: ObservableObject {
         syncQuotaRuntime()
         relay.start()
         agents.refresh()
+        claude.refresh()
         timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 guard let self, !self.stopping else { return }
                 self.now = Date()
                 self.relay.tick()
                 self.agents.refresh()
+                self.claude.refresh()
                 for (id, runtime) in self.runtimes {
                     runtime.tick(role: self.role(for: id))
                 }
@@ -271,6 +274,7 @@ final class MonitorStore: ObservableObject {
         stopping = true
         relay.stop()
         agents.stop()
+        claude.stop()
         timer?.invalidate()
         for runtime in runtimes.values { runtime.stopLive() }
     }
@@ -282,6 +286,7 @@ final class MonitorStore: ObservableObject {
         agents.refresh()
         relay.refreshBalances(force: true)
         agents.refreshGrokQuota(force: true)
+        claude.refresh(force: true)
         for (id, runtime) in runtimes {
             runtime.refreshAll(role: role(for: id))
         }
@@ -290,7 +295,7 @@ final class MonitorStore: ObservableObject {
     func refreshAllAccounts() {
         guard !isDemo else { return }
         refresh()
-        accountStatus = "已请求刷新：GPT、Grok 主动查询额度，选中账户读取用量，Claude 查询当前中转额度。"
+        accountStatus = "已请求刷新：GPT、Grok 主动查询额度，选中账户读取用量，Claude 查询官方 5 小时和每周已用额度。"
     }
 
     // MARK: - Runtime plumbing
@@ -535,6 +540,11 @@ final class MonitorStore: ObservableObject {
             "accountCount": accounts.count,
             "selected": selectedAccount?.displayName ?? "",
             "statusBar": statusLabel
+        ]
+        summary["claudeOfficial"] = [
+            "fiveHourRemaining": statusLayout.right[0], "weeklyRemaining": statusLayout.right[1],
+            "updatedAt": claude.snapshot?.readAt.timeIntervalSince1970 ?? 0,
+            "stale": claude.isStale(now: now), "error": claude.error?.localizedDescription ?? ""
         ]
         summary["relay"] = relay.diagnostics()
         summary["agentMonitor"] = [
