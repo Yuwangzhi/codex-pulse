@@ -36,5 +36,6 @@ if [[ "${1:-}" == "--install" ]]; then
     fi
   done
   ditto "$task_app" "$HOME/Applications/AI Pulse.app"
+  /usr/bin/python3 ./scripts/repair-menu-ownership.py
   ./scripts/launch.sh "$HOME/Applications/AI Pulse.app"
 fi
