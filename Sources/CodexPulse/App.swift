@@ -37,6 +37,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             floating = FloatingSessionsController(store: store)
             let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
             self.item = item
+            // Keep our placement/visibility separate from unnamed status items and restore
+            // the only normal entry point when the app is explicitly launched again.
+            item.autosaveName = "AIPulseQuota"
+            item.isVisible = true
             if let button = item.button {
                 button.image = nil
                 button.imagePosition = .noImage
@@ -55,7 +59,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             }
             updateStatus()
         }
-        store.dismissPanel = { [weak self] in self?.closePopover() }
+        store.dismissPanel = { [weak self] in
+            guard let self, !self.store.isPresentingDialog else { return }
+            self.closePopover()
+            self.preview?.orderOut(nil)
+        }
         store.revealDashboard = { [weak self] in
             self?.showPopover()
         }
@@ -147,6 +155,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         item?.button?.toolTip = store.statusTooltip
         item?.button?.setAccessibilityLabel("AI Pulse，\(store.statusTooltip)")
         floating?.update()
+        writeStatusCheck()
+    }
+
+    private var statusItemOnScreen: Bool {
+        guard let item, item.isVisible, let window = item.button?.window, window.isVisible else { return false }
+        return NSScreen.screens.contains { $0.frame.intersects(window.frame) }
+    }
+
+    // Opt-in, local UI regression evidence. No account names, quotas or credentials.
+    private func writeStatusCheck() {
+        let args = CommandLine.arguments
+        guard let index = args.firstIndex(of: "--status-check"), args.count > index + 1,
+              let item else { return }
+        let summary: [String: Any] = [
+            "bundleID": Bundle.main.bundleIdentifier ?? "",
+            "autosaveName": item.autosaveName ?? "",
+            "visible": item.isVisible,
+            "windowVisible": item.button?.window?.isVisible ?? false,
+            "anchorOnScreen": statusItemOnScreen,
+            "frame": NSStringFromRect(item.button?.window?.frame ?? .zero),
+            "popoverShown": popover.isShown,
+            "checkedAt": Date().timeIntervalSince1970
+        ]
+        if let data = try? JSONSerialization.data(withJSONObject: summary, options: [.prettyPrinted, .sortedKeys]) {
+            try? data.write(to: URL(fileURLWithPath: args[index + 1]), options: [.atomic])
+        }
     }
     @objc private func togglePopover() {
         if popover.isShown { closePopover() }
@@ -157,10 +191,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
     private func showPopover() {
         guard !popover.isShown, let button = item?.button else { return }
+        if preview?.isVisible == true { showDashboardWindow(); return }
+        // An off-screen AppKit anchor cannot position a usable popover.
+        guard statusItemOnScreen else { showDashboardWindow(); return }
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         NSApp.activate(ignoringOtherApps: true)
         popover.contentViewController?.view.window?.makeKey()
         installDismissMonitors()
+    }
+
+    private func showDashboardWindow() {
+        if preview == nil {
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 460, height: 690),
+                                  styleMask: [.titled, .closable], backing: .buffered, defer: false)
+            window.title = "AI Pulse"
+            window.isReleasedWhenClosed = false
+            window.contentView = NSHostingView(rootView: DashboardView(store: store))
+            window.center()
+            preview = window
+        }
+        preview?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     private func installDismissMonitors() {
@@ -204,7 +255,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
     func applicationDidResignActive(_ notification: Notification) { closePopover() }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        if !popover.isShown { togglePopover() }
+        // Re-register even when the local flag is already true: Control Center
+        // can leave its hosted item suppressed after a permission toggle.
+        item?.isVisible = false
+        item?.isVisible = true
+        // Control Center may hide the hosted item while its AppKit anchor still
+        // reports visible. A normal window is always reachable on explicit reopen.
+        closePopover()
+        store.selectedTab = 0
+        showDashboardWindow()
         return false
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }

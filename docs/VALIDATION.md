@@ -1,3 +1,12 @@
+# 0.5.6 菜单栏独立启动与恢复（2026-10-23）
+
+- 系统设置现场确认 AI Pulse 开启、Grok Bot / Tailscale 关闭；按用户要求关闭 CC Switch 的菜单栏显示。系统历史归属记录同时在终端 / ChatGPT 下列出 AI Pulse，在 Grok Bot 下列出 Tailscale；未直接改写这些系统记录，也未将历史记录当作单独的因果证明。
+- 状态项设置固定 `autosaveName=AIPulseQuota`；显式重新打开时重新登记可见状态，并展示独立窗口。系统关闭自己的菜单项后，原生 UI 验证重新打开仍能查看监控，窗口内收起按钮正常工作。不能仅凭 `NSStatusItem.isVisible` 判断系统托管项是否实际显示。
+- 安装等待旧进程完全退出，再替换已备份的应用。通过短暂的 GUI launchd 任务调用 Launch Services，成功 / 失败均清理任务；真实启动退出码为 0，未留下该启动任务或新增登录启动设置。
+- 最终安装版本中，将 CC Switch / Grok Bot / Tailscale 全部开启，再依次关闭 Grok Bot、Tailscale、CC Switch：系统 UI 中 AI Pulse 始终开启，本应用状态项标识、可见标志及屏幕内锚点持续正常。最终为 AI Pulse 开启、其余三个关闭。此项结合系统设置、AppKit 锚点及原生窗口验证；未把锚点诊断冒充系统托管菜单栏的像素截图。
+- 原生已安装窗口确认 GPT、Grok 服务端额度、Claude 官方 5 小时 / 每周额度和本机任务可用；启动时钥匙串读取曾较慢，随后 Grok / Claude 均恢复服务端来源和新的读取时间，无需改变权限。
+- `./scripts/swift-tool.sh test`：63 项通过；Release 构建与安装、`bash -n`、`git diff --check`、严格签名校验通过。最终安装 / 构建二进制 SHA-256 一致；账户、选中账户、主题、compactStatus、floatingEnabled、projectDirectories 六项原偏好哈希不变。版本 0.5.6，原 bundle identifier 保持不变。
+
 # 0.5.5 Claude 官方用量与两列状态栏（2026-10-22）
 
 - 修改前备份源码、工作区 diff 和偏好；保留原 GPT / Grok 服务端查询、任务监测、可选悬浮窗与账户设置。

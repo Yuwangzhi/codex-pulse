@@ -19,6 +19,14 @@ if [[ "${1:-}" == "--install" ]]; then
   task_backup="$HOME/.local/share/ai-pulse/backups/$(date +%Y%m%d-%H%M%S)"
   mkdir -p "$task_backup"
   pkill -TERM -x CodexPulse || true
+  for ((task_attempt = 0; task_attempt < 100; task_attempt++)); do
+    if ! pgrep -x CodexPulse >/dev/null; then break; fi
+    sleep 0.1
+  done
+  if pgrep -x CodexPulse >/dev/null; then
+    printf 'AI Pulse did not exit; installation stopped before replacing the app.\n' >&2
+    exit 1
+  fi
   for task_old in "$HOME/Applications/Codex Pulse.app" "$HOME/Applications/AI Pulse.app"; do
     if [[ -d "$task_old" ]]; then
       task_archive="$task_backup/$(basename "$task_old").zip"
@@ -28,5 +36,5 @@ if [[ "${1:-}" == "--install" ]]; then
     fi
   done
   ditto "$task_app" "$HOME/Applications/AI Pulse.app"
-  open "$HOME/Applications/AI Pulse.app"
+  ./scripts/launch.sh "$HOME/Applications/AI Pulse.app"
 fi
