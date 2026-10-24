@@ -1,8 +1,6 @@
 import Foundation
-import Security
 import CommonCrypto
 import CryptoKit
-import LocalAuthentication
 
 public enum GrokQuotaError: Error, LocalizedError, Equatable {
     case authorization, signedOut, accountChanged, credentials, unavailable, invalidResponse
@@ -116,23 +114,8 @@ public struct GrokQuotaCredentials: Sendable {
     }
 
     private static func storagePassword(allowInteraction: Bool) throws -> Data {
-        let context = LAContext()
-        context.interactionNotAllowed = !allowInteraction
-        var query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: "Grok Bot Safe Storage",
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne,
-            kSecUseAuthenticationContext as String: context
-        ]
-        // Legacy login-Keychain ACL dialogs can ignore LAContext alone.
-        if !allowInteraction { query[kSecUseAuthenticationUI as String] = kSecUseAuthenticationUIFail }
-        var result: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &result)
-        guard status == errSecSuccess, let data = result as? Data, !data.isEmpty else {
-            throw GrokQuotaError.authorization
-        }
-        return data
+        do { return try KeychainCredentialReader.read(service: "Grok Bot Safe Storage", allowInteraction: allowInteraction) }
+        catch { throw GrokQuotaError.authorization }
     }
 
     /// Electron/macOS v10 safeStorage (AES-128-CBC, PBKDF2-HMAC-SHA1).

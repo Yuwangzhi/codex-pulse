@@ -1,7 +1,5 @@
 import Foundation
 import CryptoKit
-import Security
-import LocalAuthentication
 
 public enum ClaudeUsageError: Error, LocalizedError, Equatable {
     case notOfficial, signedOut, authorization, expired, missingScope, invalidResponse, unavailable
@@ -130,20 +128,11 @@ public struct ClaudeUsageCredentials: Sendable {
         }
         // A custom profile must never fall back to the global user's Keychain login.
         guard directory.standardizedFileURL == defaultDir.standardizedFileURL else { throw ClaudeUsageError.signedOut }
-        let context = LAContext(); context.interactionNotAllowed = !allowInteraction
-        var query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: "Claude Code-credentials",
-            kSecReturnData as String: true, kSecMatchLimit as String: kSecMatchLimitOne,
-            kSecUseAuthenticationContext as String: context
-        ]
-        if !allowInteraction { query[kSecUseAuthenticationUI as String] = kSecUseAuthenticationUIFail }
-        var result: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &result)
-        if status == errSecItemNotFound { throw ClaudeUsageError.signedOut }
-        guard status == errSecSuccess, let data = result as? Data, data.count < 1024 * 1024 else {
-            throw ClaudeUsageError.authorization
-        }
+        let data: Data
+        do { data = try KeychainCredentialReader.read(service: "Claude Code-credentials",
+                                                      account: NSUserName(), allowInteraction: allowInteraction) }
+        catch KeychainCredentialReadError.notFound { throw ClaudeUsageError.signedOut }
+        catch { throw ClaudeUsageError.authorization }
         return try Self(data: data, now: now)
     }
 
