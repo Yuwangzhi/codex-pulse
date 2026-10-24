@@ -2,7 +2,7 @@
 
 一个原生 macOS 菜单栏小工具，直接显示 GPT / Codex、Grok Bot 的剩余额度和 Claude 官方订阅的剩余比例，点开查看来源、重置时间、DeepSeek 余额、Token 用量与本机任务。SwiftUI + AppKit，中文界面，支持系统浅色 / 深色外观，无第三方运行时依赖。
 
-![AI Pulse 演示界面（合成读数）](docs/quota-menu-dark.png)
+![AI Pulse：三家额度，抬头就看（功能示意，演示数据）](docs/ai-pulse-promo-20261024.png)
 
 ## 能看到什么
 
