@@ -179,7 +179,8 @@ final class MonitorStore: ObservableObject {
     }
     var statusLayout: QuotaStatusLayout {
         let rows = quotaMenu
-        return QuotaStatusLayout(gpt: rows[0].value, grok: rows[1].value, claude: claude.snapshot, now: now)
+        return QuotaStatusLayout(gpt: rows[0].value, grok: rows[1].value, claude: claude.snapshot,
+                                 now: now, stale: claude.isStale(now: now))
     }
     var statusLabel: String { statusLayout.text }
     var statusTooltip: String {

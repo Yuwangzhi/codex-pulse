@@ -63,7 +63,7 @@ struct QuotaOverviewView: View {
             Text(title).font(.system(size: 10)).foregroundStyle(.secondary)
             Text(value).font(.system(size: 20, weight: .semibold, design: .rounded)).monospacedDigit()
                 .frame(minHeight: 24)
-            if !value.isEmpty, let reset = window?.resetsAt {
+            if value != "—", let reset = window?.resetsAt {
                 Text(reset.formatted(date: .abbreviated, time: .shortened) + "重置")
                     .font(.system(size: 9)).foregroundStyle(.secondary)
             }

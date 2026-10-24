@@ -7,10 +7,10 @@ public enum ClaudeUsageError: Error, LocalizedError, Equatable {
 
     public var errorDescription: String? {
         switch self {
-        case .notOfficial: return "当前未连接 Claude 官方订阅，状态栏留空。"
-        case .signedOut: return "未登录 Claude 官方订阅，状态栏留空。"
+        case .notOfficial: return "未找到 Claude 官方订阅来源。"
+        case .signedOut: return "未登录 Claude 官方订阅；登录后自动读取额度。"
         case .authorization: return "Claude 官方登录凭据暂不可读，请授权后刷新。"
-        case .expired: return "Claude 官方登录已过期，请在 Claude Code 中更新登录后刷新。"
+        case .expired: return "Claude 临时凭据待更新，正在自动重试；若持续失败，请在 Claude Code 中更新登录。"
         case .missingScope: return "Claude 登录未提供用量读取权限，请使用官方订阅登录。"
         case .invalidResponse: return "Claude 官方接口暂未返回可用的额度窗口。"
         case .unavailable: return "Claude 官方用量暂时无法刷新。"
@@ -19,7 +19,7 @@ public enum ClaudeUsageError: Error, LocalizedError, Equatable {
     }
 }
 
-public struct ClaudeUsageWindow: Sendable, Equatable {
+public struct ClaudeUsageWindow: Sendable, Equatable, Codable {
     /// Official utilization is USED percentage; it is displayed as remaining to match GPT/Grok.
     public let usedPercent: Double
     public let resetsAt: Date?
@@ -33,7 +33,7 @@ public struct ClaudeUsageWindow: Sendable, Equatable {
     }
 }
 
-public struct ClaudeOfficialUsage: Sendable, Equatable {
+public struct ClaudeOfficialUsage: Sendable, Equatable, Codable {
     public let fiveHour: ClaudeUsageWindow?
     public let sevenDay: ClaudeUsageWindow?
     public let readAt: Date
@@ -63,40 +63,13 @@ public struct ClaudeOfficialUsage: Sendable, Equatable {
     }
 }
 
-/// Read the active CLI configuration, never CC Switch's historical provider selection.
-/// An API key, relay token, cloud backend or custom endpoint is not a subscription login.
-public enum ClaudeOfficialConfiguration {
-    public static func isOfficial(settings: Data?, environment: [String: String]) -> Bool {
-        var env = environment
-        if let settings {
-            guard let root = try? JSONSerialization.jsonObject(with: settings) as? [String: Any] else { return false }
-            if let overrides = root["env"] as? [String: Any] {
-                for (key, value) in overrides {
-                    guard let text = value as? String else { return false }; env[key] = text
-                }
-            }
-            if let helper = root["apiKeyHelper"] as? String, !helper.isEmpty { return false }
-        }
-        for key in ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"] {
-            if let text = env[key], !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return false }
-        }
-        for key in ["CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY"] {
-            if let text = env[key]?.lowercased(), ["1", "true"].contains(text) { return false }
-        }
-        if let base = env["ANTHROPIC_BASE_URL"], !base.isEmpty {
-            guard let url = URLComponents(string: base), url.scheme == "https", url.host == "api.anthropic.com",
-                  url.user == nil, url.password == nil, url.port == nil || url.port == 443,
-                  ["", "/"].contains(url.path), url.query == nil, url.fragment == nil else { return false }
-        }
-        return true
-    }
-}
-
 public struct ClaudeUsageCredentials: Sendable {
     private let accessToken: String
     public let fingerprint: String
+    public let expiresAt: Date
+    public var directory: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude")
 
-    public init(data: Data, now: Date) throws {
+    public init(data: Data, now: Date, allowExpired: Bool = false) throws {
         guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let oauth = root["claudeAiOauth"] as? [String: Any],
               let token = oauth["accessToken"] as? String, !token.isEmpty,
@@ -104,27 +77,28 @@ public struct ClaudeUsageCredentials: Sendable {
         guard let scopes = oauth["scopes"] as? [String], scopes.contains("user:profile") else {
             throw ClaudeUsageError.missingScope
         }
-        guard let expiry = oauth["expiresAt"] as? NSNumber, expiry.doubleValue.isFinite,
-              expiry.doubleValue / 1000 > now.timeIntervalSince1970 else { throw ClaudeUsageError.expired }
+        guard let expiry = oauth["expiresAt"] as? NSNumber, expiry.doubleValue.isFinite else { throw ClaudeUsageError.expired }
+        expiresAt = Date(timeIntervalSince1970: expiry.doubleValue / 1000)
+        guard allowExpired || expiresAt > now else { throw ClaudeUsageError.expired }
         accessToken = token
         fingerprint = SHA256.hash(data: Data(token.utf8)).map { String(format: "%02x", $0) }.joined()
     }
 
-    public static func load(allowInteraction: Bool = false, now: Date = Date(),
+    public static func load(allowInteraction: Bool = false, now: Date = Date(), allowExpired: Bool = false,
                             environment: [String: String] = ProcessInfo.processInfo.environment) throws -> Self {
         let defaultDir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude")
         let directory = environment["CLAUDE_CONFIG_DIR"].map { URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath) } ?? defaultDir
-        let settingsURL = directory.appendingPathComponent("settings.json")
-        let settings: Data?
-        do { settings = FileManager.default.fileExists(atPath: settingsURL.path) ? try Data(contentsOf: settingsURL) : nil }
-        catch { throw ClaudeUsageError.notOfficial }
-        guard ClaudeOfficialConfiguration.isOfficial(settings: settings, environment: environment) else {
-            throw ClaudeUsageError.notOfficial
+        // Monitor this profile's saved official subscription independently of its inference route.
+        // Relay/API keys are never used for quota requests or substituted for the OAuth login.
+        func decode(_ data: Data) throws -> Self {
+            var value = try Self(data: data, now: now, allowExpired: allowExpired)
+            value.directory = directory
+            return value
         }
         let file = directory.appendingPathComponent(".credentials.json")
         if FileManager.default.fileExists(atPath: file.path) {
             guard let data = try? Data(contentsOf: file), data.count < 1024 * 1024 else { throw ClaudeUsageError.signedOut }
-            return try Self(data: data, now: now)
+            return try decode(data)
         }
         // A custom profile must never fall back to the global user's Keychain login.
         guard directory.standardizedFileURL == defaultDir.standardizedFileURL else { throw ClaudeUsageError.signedOut }
@@ -133,7 +107,7 @@ public struct ClaudeUsageCredentials: Sendable {
                                                       account: NSUserName(), allowInteraction: allowInteraction) }
         catch KeychainCredentialReadError.notFound { throw ClaudeUsageError.signedOut }
         catch { throw ClaudeUsageError.authorization }
-        return try Self(data: data, now: now)
+        return try decode(data)
     }
 
     public func request() -> URLRequest {
@@ -174,7 +148,7 @@ private final class NoClaudeUsageRedirects: NSObject, URLSessionTaskDelegate, @u
                     newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) { completionHandler(nil) }
 }
 
-/// Logical rows are shared by rendering, diagnostics and tests. Missing official values are empty cells.
+/// The Claude column keeps its place through sign-out, resets and transient refresh failures.
 public struct QuotaStatusLayout: Sendable, Equatable {
     public let left: [String]
     public let right: [String]
@@ -182,8 +156,12 @@ public struct QuotaStatusLayout: Sendable, Equatable {
     public var text: String {
         zip(left, right).map { $1.isEmpty ? $0 : $0 + "\t" + $1 }.joined(separator: "\n")
     }
-    public init(gpt: String, grok: String, claude: ClaudeOfficialUsage?, now: Date) {
+    public init(gpt: String, grok: String, claude: ClaudeOfficialUsage?, now: Date, stale: Bool = false) {
         left = ["GPT " + gpt, "Grok " + grok]
-        right = [claude?.fiveHour?.text(now: now) ?? "", claude?.sevenDay?.text(now: now) ?? ""]
+        let old = stale || (claude?.isStale(now: now) ?? false)
+        right = [claude?.fiveHour, claude?.sevenDay].map { window in
+            let value = window?.text(now: now) ?? ""
+            return value.isEmpty ? "—" : value + (old ? "*" : "")
+        }
     }
 }

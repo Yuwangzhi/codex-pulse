@@ -74,13 +74,20 @@ enum KeychainCredentialReader {
     }
 
     static func run(executable: URL, arguments: [String], timeout: TimeInterval,
-                    outputLimit: Int = 1024 * 1024) throws -> Data {
+                    outputLimit: Int = 1024 * 1024, input: Data? = nil,
+                    environment: [String: String]? = nil, directory: URL? = nil) throws -> Data {
         let process = Process(), pipe = Pipe(), exited = DispatchSemaphore(value: 0)
         process.executableURL = executable; process.arguments = arguments
-        process.standardInput = FileHandle.nullDevice
+        process.environment = environment; process.currentDirectoryURL = directory
+        let inputPipe = input.map { _ in Pipe() }
+        process.standardInput = inputPipe ?? FileHandle.nullDevice as Any
         process.standardOutput = pipe; process.standardError = FileHandle.nullDevice
         process.terminationHandler = { _ in exited.signal() }
         do { try process.run() } catch { throw KeychainCredentialReadError.authorization }
+        if let input, let inputPipe {
+            try? inputPipe.fileHandleForWriting.write(contentsOf: input)
+            try? inputPipe.fileHandleForWriting.close()
+        }
 
         let output = CredentialOutput(), drained = DispatchSemaphore(value: 0)
         DispatchQueue.global(qos: .utility).async {

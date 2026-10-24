@@ -14,15 +14,15 @@ private let claudeNow = Date(timeIntervalSince1970: 1_800_000_000)
     #expect(usage.isStale(now: claudeNow.addingTimeInterval(121)))
 }
 
-@Test func missingOfficialClaudeLeavesEmptyCellsAndNeverFallsBackToRelay() throws {
+@Test func missingOfficialClaudeKeepsColumnAndNeverFallsBackToRelay() throws {
     let absent = QuotaStatusLayout(gpt: "96%", grok: "66%", claude: nil, now: claudeNow)
-    #expect(absent.text == "GPT 96%\nGrok 66%")
-    #expect(absent.right == ["", ""])
-    #expect(!absent.hasRightColumn)
+    #expect(absent.text == "GPT 96%\t—\nGrok 66%\t—")
+    #expect(absent.right == ["—", "—"])
+    #expect(absent.hasRightColumn)
     let weeklyOnly = try ClaudeOfficialUsage.decode(Data(#"{"five_hour":null,"seven_day":{"utilization":63}}"#.utf8), now: claudeNow)
     let partial = QuotaStatusLayout(gpt: "—", grok: "—", claude: weeklyOnly, now: claudeNow)
-    #expect(partial.right == ["", "37%"])
-    #expect(partial.text == "GPT —\nGrok —\t37%")
+    #expect(partial.right == ["—", "37%"])
+    #expect(partial.text == "GPT —\t—\nGrok —\t37%")
 }
 
 @Test func missingMalformedAndExpiredClaudeWindowsDoNotBecomeZero() throws {
@@ -35,21 +35,6 @@ private let claudeNow = Date(timeIntervalSince1970: 1_800_000_000)
     // Display is remaining percent; usage beyond the limit bottoms out at 0% instead of going negative.
     #expect(ClaudeUsageWindow(usedPercent: 24).text(now: claudeNow) == "76%")
     #expect(ClaudeUsageWindow(usedPercent: 105).text(now: claudeNow) == "0%")
-}
-
-@Test func relayAndAPIConfigurationsCannotExposeASavedOfficialLogin() {
-    #expect(ClaudeOfficialConfiguration.isOfficial(settings: nil, environment: [:]))
-    #expect(ClaudeOfficialConfiguration.isOfficial(settings: Data(#"{"env":{"ANTHROPIC_BASE_URL":"https://api.anthropic.com"}}"#.utf8), environment: [:]))
-    for env in [["ANTHROPIC_BASE_URL":"https://relay.example"], ["ANTHROPIC_AUTH_TOKEN":"synthetic"],
-                ["ANTHROPIC_API_KEY":"synthetic"], ["CLAUDE_CODE_OAUTH_TOKEN":"synthetic"],
-                ["CLAUDE_CODE_USE_BEDROCK":"1"], ["CLAUDE_CODE_USE_VERTEX":"true"],
-                ["ANTHROPIC_BASE_URL":"https://api.anthropic.com.evil.example"]] {
-        #expect(!ClaudeOfficialConfiguration.isOfficial(settings: nil, environment: env))
-        let data = try! JSONSerialization.data(withJSONObject: ["env": env])
-        #expect(!ClaudeOfficialConfiguration.isOfficial(settings: data, environment: [:]))
-    }
-    #expect(!ClaudeOfficialConfiguration.isOfficial(settings: Data("bad".utf8), environment: [:]))
-    #expect(!ClaudeOfficialConfiguration.isOfficial(settings: Data(#"{"apiKeyHelper":"helper"}"#.utf8), environment: [:]))
 }
 
 private func syntheticClaudeCredential(_ token: String = "synthetic-access", scopes: [String] = ["user:profile"], expiry: Date = claudeNow.addingTimeInterval(3600)) throws -> Data {
@@ -72,7 +57,7 @@ private func syntheticClaudeCredential(_ token: String = "synthetic-access", sco
     #expect(throws: ClaudeUsageError.signedOut) { try ClaudeUsageCredentials(data: Data(#"{"mcpOAuth":{}}"#.utf8), now: claudeNow) }
 }
 
-@Test func officialProfileReadIsReadOnlyAndRelaySwitchRejectsItsCachedCredential() throws {
+@Test func officialQuotaSurvivesRelaySwitchWithoutUsingRelayCredentials() throws {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: directory) }
@@ -85,10 +70,20 @@ private func syntheticClaudeCredential(_ token: String = "synthetic-access", sco
     #expect(!loaded.fingerprint.isEmpty)
     #expect(try Data(contentsOf: credentialFile) == bytes)
     try Data(#"{"env":{"ANTHROPIC_BASE_URL":"https://relay.example","ANTHROPIC_AUTH_TOKEN":"synthetic"}}"#.utf8).write(to: settingsFile)
-    #expect(throws: ClaudeUsageError.notOfficial) { try ClaudeUsageCredentials.load(now: claudeNow, environment: environment) }
+    let onRelay = try ClaudeUsageCredentials.load(now: claudeNow, environment: environment)
+    #expect(onRelay.fingerprint == loaded.fingerprint)
+    #expect(onRelay.request().url?.host == "api.anthropic.com")
+    #expect(onRelay.request().value(forHTTPHeaderField: "Authorization") == "Bearer synthetic-access")
     #expect(try Data(contentsOf: credentialFile) == bytes)
     try FileManager.default.removeItem(at: settingsFile)
     try FileManager.default.removeItem(at: credentialFile)
     // The custom profile must not borrow a real user's global Keychain login.
     #expect(throws: ClaudeUsageError.signedOut) { try ClaudeUsageCredentials.load(now: claudeNow, environment: environment) }
+}
+
+@Test func staleClaudeValuesAreMarkedAndResetWindowsBecomeUnknown() {
+    let usage = ClaudeOfficialUsage(fiveHour: .init(usedPercent: 10, resetsAt: claudeNow.addingTimeInterval(30)),
+                                   sevenDay: .init(usedPercent: 20), readAt: claudeNow)
+    #expect(QuotaStatusLayout(gpt: "1%", grok: "2%", claude: usage, now: claudeNow, stale: true).right == ["90%*", "80%*"])
+    #expect(QuotaStatusLayout(gpt: "1%", grok: "2%", claude: usage, now: claudeNow.addingTimeInterval(121)).right == ["—", "80%*"])
 }
